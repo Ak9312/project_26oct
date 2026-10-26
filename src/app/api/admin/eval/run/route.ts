@@ -1,4 +1,5 @@
 import { isAdmin, unauthorized } from "@/lib/auth";
+import { aiErrorMessage } from "@/lib/ai";
 import { loadQuestions, runOne } from "@/lib/eval";
 
 export const runtime = "nodejs";
@@ -15,6 +16,6 @@ export async function POST(req: Request) {
     return Response.json({ row: await runOne(q) });
   } catch (e) {
     console.error("eval question failed", e);
-    return Response.json({ error: (e as Error).message }, { status: 502 });
+    return Response.json({ error: aiErrorMessage(e) }, { status: 502 });
   }
 }

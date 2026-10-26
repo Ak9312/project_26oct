@@ -1,4 +1,4 @@
-import { AiNotConfiguredError, aiMode, embedQuery, streamAnswer, type ChatTurn } from "@/lib/ai";
+import { AiNotConfiguredError, aiErrorMessage, aiMode, embedQuery, streamAnswer, type ChatTurn } from "@/lib/ai";
 import { loadIndex } from "@/lib/index-store";
 import { clientIp, rateLimit } from "@/lib/ratelimit";
 import { retrieveUnique } from "@/lib/retrieve";
@@ -54,7 +54,7 @@ export async function POST(req: Request) {
     }));
   } catch (e) {
     console.error("retrieval failed", e);
-    return Response.json({ error: "Search is unavailable right now. Try again in a minute." }, { status: 502 });
+    return Response.json({ error: aiErrorMessage(e) }, { status: 502 });
   }
 
   const enc = new TextEncoder();
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
         send({ type: "done" });
       } catch (e) {
         console.error("generation failed", e);
-        send({ type: "error", error: "The answer couldn't be generated. Try again in a minute." });
+        send({ type: "error", error: aiErrorMessage(e) });
       }
       controller.close();
     },

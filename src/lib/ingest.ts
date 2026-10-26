@@ -162,15 +162,27 @@ export async function ingestFile(opts: {
   });
 }
 
-export async function deleteDoc(id: string) {
-  return withIndexLock(async () => {
+/** Best-effort removal of stored originals; never blocks or fails the index update. */
+async function deleteStoredFiles(paths: string[]) {
+  await Promise.race([
+    Promise.allSettled(paths.map((p) => deleteFile(p))),
+    new Promise((r) => setTimeout(r, 8000)),
+  ]);
+}
+
+/** Removes documents by id (or all documents) from the index, then their stored files. */
+export async function deleteDocs(ids: string[] | "all") {
+  const removed = await withIndexLock(async () => {
     const { data } = await loadIndex(true);
-    const doc = data.docs.find((d) => d.id === id);
-    if (!doc) return false;
-    data.docs = data.docs.filter((d) => d.id !== id);
-    data.chunks = data.chunks.filter((c) => c.docId !== id);
-    if (doc.blobPathname) await deleteFile(doc.blobPathname);
+    const drop = ids === "all" ? data.docs : data.docs.filter((d) => ids.includes(d.id));
+    if (!drop.length) return [];
+    const dropIds = new Set(drop.map((d) => d.id));
+    data.docs = data.docs.filter((d) => !dropIds.has(d.id));
+    data.chunks = data.chunks.filter((c) => !dropIds.has(c.docId));
     await saveIndex(data);
-    return true;
+    return drop;
   });
+  const paths = removed.map((d) => d.blobPathname).filter((p): p is string => !!p);
+  if (paths.length) await deleteStoredFiles(paths);
+  return removed.length;
 }

@@ -37,6 +37,10 @@ export default function AdminDashboard() {
   const [docs, setDocs] = useState<DocsRes | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [dragging, setDragging] = useState(false);
+  // Remove uses an inline two-step confirm (browser pop-ups can be blocked or suppressed).
+  const [confirming, setConfirming] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [libError, setLibError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const running = useRef(false);
 
@@ -133,10 +137,31 @@ export default function AdminDashboard() {
     processQueue(items);
   }
 
-  async function removeDoc(d: DocRecord) {
-    if (!confirm(`Remove "${d.name}" and its ${d.chunkCount} passages from the library?`)) return;
-    await fetch(`/api/admin/docs?id=${encodeURIComponent(d.id)}`, { method: "DELETE" });
-    refreshDocs();
+  async function removeDocs(target: DocRecord | "all") {
+    const key = target === "all" ? "all" : target.id;
+    setRemoving(key);
+    setLibError("");
+    try {
+      const qs = target === "all" ? "all=1" : `id=${encodeURIComponent(target.id)}`;
+      const r = await fetch(`/api/admin/docs?${qs}`, { method: "DELETE" });
+      if (r.status === 401) {
+        window.location.reload();
+        return;
+      }
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok && r.status !== 404) {
+        setLibError(data.error ?? "Couldn't remove the document. Try again.");
+      } else if (data.docs) {
+        setDocs({ docs: data.docs, chunkCount: data.chunkCount, stats: data.stats });
+      } else {
+        await refreshDocs();
+      }
+    } catch {
+      setLibError("Couldn't reach the server. Check your connection and try again.");
+    } finally {
+      setRemoving(null);
+      setConfirming(null);
+    }
   }
 
   async function signOut() {
@@ -255,7 +280,30 @@ export default function AdminDashboard() {
         </section>
 
         <section className="panel">
-          <h2 className="panel-title">Library</h2>
+          <div className="panel-head">
+            <h2 className="panel-title">Library</h2>
+            {docs && docs.docs.length > 1 &&
+              (confirming === "all" ? (
+                <div className="row-gap">
+                  <span className="danger-text small-text">Remove all {docs.docs.length} documents?</span>
+                  <button className="btn small btn-danger" onClick={() => removeDocs("all")} disabled={removing === "all"}>
+                    {removing === "all" ? "Removing…" : "Yes, remove all"}
+                  </button>
+                  <button className="btn btn-quiet small" onClick={() => setConfirming(null)} disabled={removing === "all"}>
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button className="btn btn-quiet small danger-text" onClick={() => setConfirming("all")} disabled={!!removing}>
+                  Remove all
+                </button>
+              ))}
+          </div>
+          {libError && (
+            <p className="notice notice-danger" role="alert">
+              {libError}
+            </p>
+          )}
           {!docs ? (
             <p className="muted">Loading…</p>
           ) : docs.docs.length === 0 ? (
@@ -286,10 +334,26 @@ export default function AdminDashboard() {
                       <td className="num">{d.chunkCount}</td>
                       <td className="num">{d.duplicateChunksSkipped}</td>
                       <td className="nowrap">{fmtDate(d.uploadedAt)}</td>
-                      <td>
-                        <button className="btn btn-quiet small danger-text" onClick={() => removeDoc(d)}>
-                          Remove
-                        </button>
+                      <td className="nowrap">
+                        {confirming === d.id ? (
+                          <div className="row-gap">
+                            <button className="btn small btn-danger" onClick={() => removeDocs(d)} disabled={removing === d.id}>
+                              {removing === d.id ? "Removing…" : "Confirm"}
+                            </button>
+                            <button className="btn btn-quiet small" onClick={() => setConfirming(null)} disabled={removing === d.id}>
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            className="btn btn-quiet small danger-text"
+                            onClick={() => setConfirming(d.id)}
+                            disabled={!!removing}
+                            aria-label={`Remove ${d.name}`}
+                          >
+                            Remove
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -330,7 +394,6 @@ function Evaluation({ hasDocs, aiReady }: { hasDocs: boolean; aiReady: boolean }
   }, []);
 
   async function build() {
-    if (set && !confirm("Replace the current 25 questions with a new set? Saved results stay until the next run.")) return;
     setBuilding(true);
     setError("");
     const r = await fetch("/api/admin/eval/questions", { method: "POST" });

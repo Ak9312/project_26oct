@@ -1,5 +1,5 @@
 import "server-only";
-import { aiMode, answerOnce, CHAT_MODEL, EMBED_MODEL, embedQuery, generateJSON, NOT_FOUND } from "./ai";
+import { aiErrorMessage, aiMode, answerOnce, CHAT_MODEL, EMBED_MODEL, embedQuery, generateJSON, NOT_FOUND } from "./ai";
 import { loadIndex } from "./index-store";
 import { countDuplicates, retrieveNaive, retrieveUnique, type Scored } from "./retrieve";
 import { readJSON, writeJSON } from "./storage";
@@ -26,7 +26,7 @@ export const saveResults = (s: EvalSummary) => writeJSON(R_PATH, s);
 function pickPassages(chunks: ChunkRecord[], n: number): ChunkRecord[] {
   const byDoc = new Map<string, ChunkRecord[]>();
   for (const c of chunks) {
-    if (c.text.length < 350) continue;
+    if (c.text.length < 200) continue;
     byDoc.set(c.docId, [...(byDoc.get(c.docId) ?? []), c]);
   }
   const docs = [...byDoc.values()];
@@ -57,10 +57,17 @@ export async function generateQuestionSet(n = EVAL_SIZE): Promise<EvalQuestionSe
   if (passages.length < 5) {
     throw new Error("Upload more documents first: at least 5 substantial passages are needed.");
   }
-  const questions: EvalQuestion[] = [];
-  for (let i = 0; i < passages.length; i += 5) {
-    const batch = passages.slice(i, i + 5);
-    const prompt = `You are building a test set for a policy-document search assistant.
+  // Batches of 5 passages run in parallel (3 at a time) so the whole build fits the time limit.
+  const batches: ChunkRecord[][] = [];
+  for (let i = 0; i < passages.length; i += 5) batches.push(passages.slice(i, i + 5));
+  const results: (GenItem[] | null)[] = new Array(batches.length).fill(null);
+  let lastError: unknown = null;
+  let next = 0;
+  async function worker() {
+    while (next < batches.length) {
+      const idx = next++;
+      const batch = batches[idx];
+      const prompt = `You are building a test set for a policy-document search assistant.
 For EACH numbered passage, write one question a member of the public might ask that is answered
 specifically and only by that passage, plus a short correct answer (under 30 words) taken from it.
 Rules: the question must make sense on its own (name the policy or topic; never say "this passage",
@@ -69,13 +76,25 @@ responsibilities or penalties; do not ask yes/no questions.
 Return JSON: [{"n": <passage number>, "question": "...", "answer": "..."}]
 
 ${batch.map((c, j) => `Passage ${j + 1} (from "${c.docName}"):\n${c.text}`).join("\n\n")}`;
-    const items = await generateJSON<GenItem[]>(prompt, () =>
-      batch.map((c, j) => {
-        const sentence = c.text.split(/(?<=[.!?])\s+/).find((s) => s.length > 60) ?? c.text.slice(0, 160);
-        const words = sentence.split(/\s+/).slice(0, 9).join(" ").replace(/[^\w\s-]/g, "");
-        return { n: j + 1, question: `What does the policy say about ${words.toLowerCase()}?`, answer: sentence.slice(0, 200) };
-      })
-    );
+      try {
+        results[idx] = await generateJSON<GenItem[]>(prompt, () =>
+          batch.map((c, j) => {
+            const sentence = c.text.split(/(?<=[.!?])\s+/).find((s) => s.length > 60) ?? c.text.slice(0, 160);
+            const words = sentence.split(/\s+/).slice(0, 9).join(" ").replace(/[^\w\s-]/g, "");
+            return { n: j + 1, question: `What does the policy say about ${words.toLowerCase()}?`, answer: sentence.slice(0, 200) };
+          })
+        );
+      } catch (e) {
+        lastError = e;
+        console.error(`question batch ${idx + 1} failed`, e);
+      }
+    }
+  }
+  await Promise.all([worker(), worker(), worker()]);
+
+  const questions: EvalQuestion[] = [];
+  results.forEach((items, idx) => {
+    const batch = batches[idx];
     for (const it of Array.isArray(items) ? items : []) {
       const c = batch[(it.n ?? 0) - 1];
       if (!c || !it.question) continue;
@@ -88,6 +107,9 @@ ${batch.map((c, j) => `Passage ${j + 1} (from "${c.docName}"):\n${c.text}`).join
         page: c.page,
       });
     }
+  });
+  if (questions.length < 5) {
+    throw new Error(lastError ? aiErrorMessage(lastError) : "Not enough questions could be written. Try again.");
   }
   const set: EvalQuestionSet = {
     createdAt: new Date().toISOString(),
