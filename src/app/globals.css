@@ -1,0 +1,175 @@
+@import "tailwindcss";
+
+/*
+  Policy Knowledge Assistant
+  Palette: cool record-office paper, navy ink, seal green for actions,
+  and a marker yellow that only ever means "this is the cited passage".
+*/
+:root {
+  --font-ui: "Public Sans Variable";
+  --font-read: "Literata Variable";
+  --paper: #f3f5f2;
+  --sheet: #ffffff;
+  --tab: #e3e9e1;
+  --ink: #14213d;
+  --ink-2: #4b5567;
+  --ink-3: #6f7a8c;
+  --rule: #d6dcd4;
+  --seal: #1f6f5c;
+  --seal-ink: #ffffff;
+  --seal-soft: #e1efe9;
+  --mark: rgba(242, 205, 60, 0.42);
+  --danger: #a3302a;
+  --danger-soft: #f8e7e5;
+  --warn: #8a5a00;
+  --warn-soft: #fbf0d9;
+  --focus: #2a62c9;
+  --radius-sheet: 14px;
+  --radius-ctl: 8px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #0f1626;
+    --sheet: #172036;
+    --tab: #212c47;
+    --ink: #e8ecf2;
+    --ink-2: #a3aec0;
+    --ink-3: #7f8aa0;
+    --rule: #2b3653;
+    --seal: #5cbfa4;
+    --seal-ink: #08261e;
+    --seal-soft: #173a33;
+    --mark: rgba(242, 205, 60, 0.26);
+    --danger: #f08a80;
+    --danger-soft: #3a1f25;
+    --warn: #e9b85a;
+    --warn-soft: #3a2e17;
+    --focus: #7fa8ff;
+  }
+}
+
+@theme inline {
+  --font-sans: var(--font-ui), system-ui, sans-serif;
+  --font-serif: var(--font-read), Georgia, serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui), system-ui, sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--mark);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.read {
+  font-family: var(--font-read), Georgia, serif;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: var(--radius-ctl);
+  padding: 9px 16px;
+  font-weight: 600;
+  font-size: 15px;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn:hover {
+  border-color: var(--ink-3);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.btn-seal {
+  background: var(--seal);
+  color: var(--seal-ink);
+  border-color: var(--seal);
+}
+.btn-seal:hover {
+  filter: brightness(1.08);
+  border-color: var(--seal);
+}
+.btn-quiet {
+  border-color: transparent;
+  background: transparent;
+  padding: 6px 10px;
+  color: var(--ink-2);
+  font-weight: 500;
+}
+.btn-quiet:hover {
+  background: var(--tab);
+  border-color: transparent;
+}
+
+.field {
+  width: 100%;
+  border: 1px solid var(--rule);
+  background: var(--sheet);
+  color: var(--ink);
+  border-radius: var(--radius-ctl);
+  padding: 10px 12px;
+  font: inherit;
+}
+.field:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+  border-color: transparent;
+}
+
+mark.cite-mark {
+  background: linear-gradient(transparent 12%, var(--mark) 12%, var(--mark) 88%, transparent 88%);
+  color: inherit;
+  padding: 0 1px;
+}
+
+@keyframes caret {
+  50% {
+    opacity: 0;
+  }
+}
+.caret::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: -0.12em;
+  background: var(--seal);
+  animation: caret 1s steps(1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .caret::after {
+    animation: none;
+  }
+  * {
+    transition: none !important;
+  }
+}
