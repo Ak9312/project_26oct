@@ -164,11 +164,6 @@ export default function AdminDashboard() {
     }
   }
 
-  async function signOut() {
-    await fetch("/api/admin/logout", { method: "POST" });
-    window.location.reload();
-  }
-
   return (
     <div className="admin">
       <header className="topbar">
@@ -180,9 +175,6 @@ export default function AdminDashboard() {
           <a className="btn btn-quiet" href="/" target="_blank" rel="noreferrer">
             Open public chat
           </a>
-          <button className="btn btn-quiet" onClick={signOut}>
-            Sign out
-          </button>
         </div>
       </header>
 

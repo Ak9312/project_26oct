@@ -5,7 +5,7 @@ This project rebuilds the retrieval-augmented generation (RAG) assistant from my
 fixes its main weakness: **duplicate chunks**.
 
 - **Public chat** (`/`): anyone can ask questions. Answers come only from the published documents, with numbered citations and the cited passage highlighted.
-- **Private admin page** (secret URL + password): upload documents, see what was indexed, and run the 25-question evaluation.
+- **Private admin page** (secret URL known only to the owner): upload documents, see what was indexed, and run the 25-question evaluation.
 - **Public data only.** The library contains only publicly published policy documents.
 
 **Live demo:** https://policy-knowledge-assistant.vercel.app
@@ -117,15 +117,15 @@ src/
     eval.ts                   test-set builder, runner, scoring
     ai.ts                     Gemini calls (with retry); offline mock for local tests
     storage.ts                Vercel Blob or local folder
-    auth.ts                   password check and signed session cookie
-  proxy.ts                    serves the admin page only at the secret path
+    session.ts, auth.ts       signed admin session cookie
+  proxy.ts                    serves the admin page only at the secret path and signs you in
 ```
 
 ## Run locally
 
 ```bash
 npm install
-cp .env.example .env.local   # fill in GEMINI_API_KEY, ADMIN_PASSWORD, ADMIN_PATH
+cp .env.example .env.local   # fill in GEMINI_API_KEY and ADMIN_PATH
 npm run dev
 ```
 
@@ -136,12 +136,14 @@ Without `BLOB_READ_WRITE_TOKEN`, files are stored in `./.data`. To try the app w
 
 1. Import this repository in Vercel.
 2. Create a **private Blob store** and connect it to the project (this adds `BLOB_READ_WRITE_TOKEN`).
-3. Add `GEMINI_API_KEY`, `ADMIN_PASSWORD` and `ADMIN_PATH` as environment variables.
-4. Redeploy, open `https://<your-site>/<ADMIN_PATH>`, sign in and upload documents.
+3. Add `GEMINI_API_KEY` and `ADMIN_PATH` (a long random string) as environment variables.
+4. Redeploy, open `https://<your-site>/<ADMIN_PATH>` and upload documents.
 
 ## Security notes
 
-- The admin page is hidden at a secret path, but the real protection is the password: every admin API checks a signed, HTTP-only session cookie.
-- Login attempts and public questions are rate-limited per IP.
-- API keys live only in environment variables, never in the repository.
+- There are two URLs: the public chat at `/`, and the admin page at `/<ADMIN_PATH>`, which only the owner knows. `/admin` and any wrong path return 404.
+- Opening the secret URL sets a signed, HTTP-only cookie (valid 12 hours). Every admin API (upload, delete, evaluation) checks that cookie, so the APIs can't be used without having opened the secret URL.
+- The cookie signature is derived from `ADMIN_PATH`, so changing `ADMIN_PATH` in Vercel immediately locks out every old link and session. Do this if the link is ever shared by mistake.
+- The admin page sends `noindex` and `no-referrer`, so it isn't indexed and its address isn't leaked to other sites.
+- Public questions are rate-limited per IP. API keys live only in environment variables, never in the repository.
 - Uploaded files are stored in a private Blob store and are not publicly downloadable.

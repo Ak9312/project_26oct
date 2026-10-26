@@ -1,22 +1,36 @@
 import { NextResponse, type NextRequest } from "next/server";
+import { adminSecretPath, createSessionToken, SESSION_COOKIE } from "@/lib/session";
 
 /**
- * The admin page is only reachable at a secret path set in ADMIN_PATH
- * (for example "admin_x7k2p9"). Visiting /admin directly returns 404.
- * The password check on every admin API is the real protection; the secret
- * path just keeps the page out of sight.
+ * Two URLs:
+ * - "/" is the public chat, open to everyone.
+ * - "/<ADMIN_PATH>" is the private admin page. Visiting it signs you in with a signed,
+ *   HTTP-only cookie that the admin APIs require. "/admin" itself always returns 404,
+ *   so the admin page exists only at the secret path.
  */
 export function proxy(req: NextRequest) {
-  const secret = (process.env.ADMIN_PATH || "").replace(/^\/+|\/+$/g, "");
+  const secret = adminSecretPath();
   const { pathname } = req.nextUrl;
-  const clean = pathname.replace(/\/+$/, "");
+  const clean = pathname.replace(/\/+$/, "") || "/";
 
-  if (secret && clean === `/${secret}`) {
+  if (secret.length >= 8 && clean === `/${secret}`) {
     const url = req.nextUrl.clone();
     url.pathname = "/admin";
-    return NextResponse.rewrite(url);
+    const res = NextResponse.rewrite(url);
+    const { token, maxAge } = createSessionToken();
+    res.cookies.set(SESSION_COOKIE, token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      path: "/",
+      maxAge,
+    });
+    res.headers.set("Cache-Control", "private, no-store");
+    res.headers.set("Referrer-Policy", "no-referrer");
+    res.headers.set("X-Robots-Tag", "noindex, nofollow");
+    return res;
   }
-  if (secret && (clean === "/admin" || pathname.startsWith("/admin/"))) {
+  if (clean === "/admin" || pathname.startsWith("/admin/")) {
     const url = req.nextUrl.clone();
     url.pathname = "/__not-found";
     return NextResponse.rewrite(url);
