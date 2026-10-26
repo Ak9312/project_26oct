@@ -6,6 +6,7 @@ import { loadIndex, saveIndex, withIndexLock } from "./index-store";
 import { chunkHash, cosine, encodeVector, randomId, sha256 } from "./text";
 import { deleteFile, writeFileBuf } from "./storage";
 import type { ChunkRecord, DocRecord } from "./types";
+import { pruneEvalForRemovedDocs } from "./eval";
 
 export const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
@@ -172,16 +173,24 @@ async function deleteStoredFiles(paths: string[]) {
 
 /** Removes documents by id (or all documents) from the index, then their stored files. */
 export async function deleteDocs(ids: string[] | "all") {
+  let removedChunkIds = new Set<string>();
   const removed = await withIndexLock(async () => {
     const { data } = await loadIndex(true);
     const drop = ids === "all" ? data.docs : data.docs.filter((d) => ids.includes(d.id));
     if (!drop.length) return [];
     const dropIds = new Set(drop.map((d) => d.id));
+    const chunkIds = new Set(data.chunks.filter((c) => dropIds.has(c.docId)).map((c) => c.id));
+    removedChunkIds = chunkIds;
     data.docs = data.docs.filter((d) => !dropIds.has(d.id));
     data.chunks = data.chunks.filter((c) => !dropIds.has(c.docId));
     await saveIndex(data);
     return drop;
   });
+  if (removed.length) {
+    await pruneEvalForRemovedDocs({ chunkIds: removedChunkIds, names: new Set(removed.map((d) => d.name)) }, ids === "all").catch((e) =>
+      console.error("pruning evaluation data failed", e)
+    );
+  }
   const paths = removed.map((d) => d.blobPathname).filter((p): p is string => !!p);
   if (paths.length) await deleteStoredFiles(paths);
   return removed.length;

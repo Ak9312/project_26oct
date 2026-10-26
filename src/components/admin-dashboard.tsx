@@ -381,8 +381,10 @@ function Evaluation({ hasDocs, aiReady }: { hasDocs: boolean; aiReady: boolean }
   const [showQs, setShowQs] = useState(false);
 
   useEffect(() => {
-    fetch("/api/admin/eval/questions").then(async (r) => r.ok && setSet((await r.json()).set));
-    fetch("/api/admin/eval/results").then(async (r) => r.ok && setSummary((await r.json()).summary));
+    // questions first: loading them also clears any left over from removed documents
+    fetch("/api/admin/eval/questions")
+      .then(async (r) => r.ok && setSet((await r.json()).set))
+      .finally(() => fetch("/api/admin/eval/results").then(async (r) => r.ok && setSummary((await r.json()).summary)));
   }, []);
 
   async function build() {

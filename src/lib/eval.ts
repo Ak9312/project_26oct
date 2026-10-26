@@ -2,7 +2,7 @@ import "server-only";
 import { aiErrorMessage, aiMode, answerOnce, CHAT_MODEL, EMBED_MODEL, embedQuery, generateJSON, NOT_FOUND } from "./ai";
 import { loadIndex } from "./index-store";
 import { countDuplicates, retrieveNaive, retrieveUnique, type Scored } from "./retrieve";
-import { readJSON, writeJSON } from "./storage";
+import { deleteFile, readJSON, writeJSON } from "./storage";
 import type {
   ChunkRecord,
   EvalQuestion,
@@ -21,6 +21,27 @@ export const loadQuestions = () => readJSON<EvalQuestionSet>(Q_PATH);
 export const loadResults = () => readJSON<EvalSummary>(R_PATH);
 export const saveQuestions = (s: EvalQuestionSet) => writeJSON(Q_PATH, s);
 export const saveResults = (s: EvalSummary) => writeJSON(R_PATH, s);
+
+/**
+ * Keeps the test set in step with the library: questions written from removed
+ * documents are dropped, and saved results that used them are cleared.
+ */
+export async function pruneEvalForRemovedDocs(removed: { chunkIds: Set<string>; names: Set<string> }, all: boolean) {
+  if (all) {
+    await Promise.allSettled([deleteFile(Q_PATH), deleteFile(R_PATH)]);
+    return;
+  }
+  const set = await loadQuestions().catch(() => null);
+  if (set) {
+    const keep = set.questions.filter((q) => !removed.chunkIds.has(q.goldChunkId));
+    if (keep.length !== set.questions.length) {
+      if (keep.length) await saveQuestions({ ...set, questions: keep });
+      else await deleteFile(Q_PATH);
+    }
+  }
+  const results = await loadResults().catch(() => null);
+  if (results?.rows.some((r) => removed.names.has(r.docName))) await deleteFile(R_PATH);
+}
 
 /** Pick passages spread evenly across every document and page range. */
 function pickPassages(chunks: ChunkRecord[], n: number): ChunkRecord[] {
