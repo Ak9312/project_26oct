@@ -8,6 +8,8 @@ fixes its main weakness: **duplicate chunks**.
 - **Private admin page** (secret URL + password): upload documents, see what was indexed, and run the 25-question evaluation.
 - **Public data only.** The library contains only publicly published policy documents.
 
+**Live demo:** https://policy-knowledge-assistant.vercel.app
+
 > Demo video: _link to be added_
 
 ---
