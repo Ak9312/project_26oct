@@ -30,12 +30,14 @@ Admin upload ──► fingerprint check ──► parse ──► strip headers
                      └─ already indexed? block                                  ▼
                                                     exact-duplicate check (normalized text hash)
                                                                                 │
-                                                    embed (Gemini) ──► near-duplicate check (cosine ≥ 0.985)
+                                         near-duplicate check (shared vocabulary ≥ 0.9,
+                                         or embedding similarity ≥ 0.985 when embeddings are on)
                                                                                 │
                                                                                 ▼
-                                                                         vector index
+                                                        index: keywords (BM25) + optional embeddings
                                                                                 │
-Public question ──► embed ──► rank all chunks ──► pick top 5 *distinct* passages ──► Gemini answer with [n] citations
+Public question ──► keyword ranking ─┬─► merged ranking ──► top 5 *distinct* passages ──► Groq answer with [n] citations
+                    meaning ranking ─┘   (reciprocal rank fusion)
 ```
 
 Duplicates are handled at four levels:
@@ -45,11 +47,12 @@ Duplicates are handled at four levels:
 | File | The same file uploaded again, even under a new name | SHA-256 of the bytes, checked in the browser before upload and again on the server |
 | Boilerplate | Running headers, footers, page numbers repeated on every page | Lines appearing on at least half the pages are removed before chunking |
 | Passage | The same text arriving in a different file (re-saved copy, reprint) | SHA-256 of normalized text (case, spacing, punctuation ignored) |
-| Retrieval | Anything that still slips through | Top-k selection skips results with the same hash or embedding similarity ≥ 0.95 to a chosen result |
+| Retrieval | Anything that still slips through | Top-k selection skips results with the same hash, near-identical vocabulary, or embedding similarity ≥ 0.95 to a chosen result |
 
 Other changes from the notebook:
 
 - **Page-aware chunking.** Chunks never cross a page boundary, so every citation points to one exact page. Overlap is limited to one short sentence so it can't create near-duplicate chunks.
+- **Hybrid search.** Keyword search (BM25) always runs and needs no API key. When Gemini embeddings are configured, meaning-based ranking runs too and the two are merged. If the embedding service is down, search quietly falls back to keywords.
 - **Grounded answers.** The model is told to use only the numbered passages, cite every claim, and reply "I couldn't find this in the published documents." when the answer isn't there.
 - **Source display.** Each cited passage is shown as a file-tab card with document name and page, with the sentence that supports the answer highlighted.
 
@@ -57,11 +60,11 @@ Other changes from the notebook:
 
 The admin page builds and runs the test set:
 
-1. **Build.** 25 passages are picked evenly across all documents. For each one, Gemini writes a question a member of the public might ask, plus a short reference answer, using only that passage. The correct document and page are therefore known.
+1. **Build.** 25 passages are picked evenly across all documents. For each one, a Groq model writes a question a member of the public might ask, plus a short reference answer, using only that passage. The correct document and page are therefore known.
 2. **Run.** Every question goes through two retrieval setups:
    - **Improved:** this app's index and distinct top-5 retrieval.
    - **Baseline:** a reproduction of the notebook bug, with every file indexed twice and plain top-5.
-3. **Grade.** The improved answer is graded by Gemini for *faithfulness* (every claim supported by its sources) and *correctness* (matches the reference answer).
+3. **Grade.** The improved answer is graded by a second Groq model for *faithfulness* (every claim supported by its sources) and *correctness* (matches the reference answer).
 
 Metrics reported:
 
@@ -94,7 +97,8 @@ that produced the answers.
 ## Tech stack
 
 - **Next.js 16** (App Router, TypeScript) on **Vercel**
-- **Google Gemini**: `gemini-embedding-2` (768-dim embeddings) and `gemini-3.8-flash` (answers, question writing, grading); both configurable
+- **Groq** for all text generation: `openai/gpt-oss-120b` writes answers (falling back to `openai/gpt-oss-20b` if it hits its limit), and `openai/gpt-oss-20b` writes test questions and grades them, using strict JSON schemas. Groq's free limits are per model, so evaluation doesn't use up the chat budget. All models are configurable.
+- **Keyword search (BM25)**, built in, plus optional **Gemini embeddings** (`gemini-embedding-2`, 768 dimensions) for meaning-based search. Groq has no embedding models.
 - **Vercel Blob** (private store) for uploaded files and the index; the browser uploads files directly to Blob, so 10 MB files work
 - **unpdf** (PDF text per page), **mammoth** (Word .docx)
 - Brute-force cosine search in memory: exact, and fast for a library of a few thousand passages
@@ -115,7 +119,8 @@ src/
     chunk.ts                  boilerplate removal and page-aware chunking
     retrieve.ts               distinct top-k and the naive baseline
     eval.ts                   test-set builder, runner, scoring
-    ai.ts                     Gemini calls (with retry); offline mock for local tests
+    ai.ts                     Groq generation, optional Gemini embeddings, rate-limit handling; offline mock
+    bm25.ts                   keyword search
     storage.ts                Vercel Blob or local folder
     session.ts, auth.ts       signed admin session cookie
   proxy.ts                    serves the admin page only at the secret path and signs you in
@@ -125,19 +130,27 @@ src/
 
 ```bash
 npm install
-cp .env.example .env.local   # fill in GEMINI_API_KEY and ADMIN_PATH
+cp .env.example .env.local   # fill in GROQ_API_KEY and ADMIN_PATH (GEMINI_API_KEY optional)
 npm run dev
 ```
 
-Without `BLOB_READ_WRITE_TOKEN`, files are stored in `./.data`. To try the app without a Gemini key, set
+Without `BLOB_READ_WRITE_TOKEN`, files are stored in `./.data`. To try the app without any key, set
 `MOCK_AI=1` (offline stand-in: answers are not real, useful only for testing the pipeline and UI).
 
 ## Deploy on Vercel
 
 1. Import this repository in Vercel.
 2. Create a **private Blob store** and connect it to the project (this adds `BLOB_READ_WRITE_TOKEN`).
-3. Add `GEMINI_API_KEY` and `ADMIN_PATH` (a long random string) as environment variables.
+3. Add `GROQ_API_KEY` and `ADMIN_PATH` (a long random string) as environment variables. Add `GEMINI_API_KEY` too for meaning-based search.
 4. Redeploy, open `https://<your-site>/<ADMIN_PATH>` and upload documents.
+
+## Free-tier limits
+
+On Groq's free plan the binding limit is usually tokens per minute (8,000 for the gpt-oss models). One answer uses about 2,000 to 3,000 tokens, so expect roughly three answers a minute on the main model before the fallback model takes over. When a limit is hit:
+
+- **Chat** waits a few seconds and retries, then switches to the fallback model, then shows how long to wait.
+- **Evaluation** waits out per-minute limits and resumes automatically; a full 25-question run takes a few minutes. If a daily limit runs out, it saves the questions finished so far.
+- Questions that share no words with the library are answered "not found" without any AI call.
 
 ## Security notes
 

@@ -1,93 +1,134 @@
 import "server-only";
-import { GoogleGenAI, ThinkingLevel } from "@google/genai";
+import Groq from "groq-sdk";
+import { GoogleGenAI } from "@google/genai";
 import { normalizeForHash } from "./text";
 
-export const EMBED_DIMS = 768;
-export const CHAT_MODEL = process.env.GEMINI_CHAT_MODEL || "gemini-3.8-flash";
-export const EMBED_MODEL = process.env.GEMINI_EMBED_MODEL || "gemini-embedding-2";
-
 /**
- * "gemini" when GEMINI_API_KEY is set. "mock" is an offline stand-in used only for
- * local development and tests (MOCK_AI=1); it is never used in production.
+ * Text generation: Groq (GROQ_API_KEY). Required.
+ *   - Answers use GROQ_CHAT_MODEL.
+ *   - Writing test questions and grading use GROQ_EVAL_MODEL. Groq's free limits are
+ *     per model, so using a second model keeps evaluation from eating the chat budget.
+ * Meaning-based search: Gemini embeddings (GEMINI_API_KEY). Optional. Groq has no
+ *   embedding models; without this key the app uses keyword search only.
+ * MOCK_AI=1 is an offline stand-in for local tests only.
  */
-export const aiMode: "gemini" | "mock" | "missing" = process.env.GEMINI_API_KEY
-  ? "gemini"
-  : process.env.MOCK_AI === "1"
-    ? "mock"
-    : "missing";
+export const CHAT_MODEL = process.env.GROQ_CHAT_MODEL || "openai/gpt-oss-120b";
+export const CHAT_FALLBACK_MODEL = process.env.GROQ_FALLBACK_MODEL || "openai/gpt-oss-20b";
+export const EVAL_MODEL = process.env.GROQ_EVAL_MODEL || "openai/gpt-oss-20b";
+export const EMBED_MODEL = process.env.GEMINI_EMBED_MODEL || "gemini-embedding-2";
+export const EMBED_DIMS = 768;
+
+const MOCK = process.env.MOCK_AI === "1";
+export const aiMode: "groq" | "mock" | "missing" = process.env.GROQ_API_KEY ? "groq" : MOCK ? "mock" : "missing";
+export const embedMode: "gemini" | "mock" | "none" = process.env.GEMINI_API_KEY ? "gemini" : MOCK ? "mock" : "none";
+
+const isGptOss = (m: string) => m.startsWith("openai/gpt-oss");
 
 export class AiNotConfiguredError extends Error {
   constructor() {
-    super("The assistant isn't configured yet: GEMINI_API_KEY is missing on the server.");
+    super("The assistant isn't configured yet: GROQ_API_KEY is missing on the server.");
   }
 }
 
-let client: GoogleGenAI | null = null;
+/** Groq refused because a free-tier limit was reached. */
+export class AiRateLimitError extends Error {
+  constructor(
+    public kind: "minute" | "day",
+    public retryAfterS: number,
+    public model: string
+  ) {
+    super(
+      kind === "day"
+        ? `Groq's daily free limit for ${model} is used up. It resets within 24 hours${retryAfterS ? ` (about ${fmtWait(retryAfterS)})` : ""}.`
+        : `The assistant is busy (Groq's per-minute limit). Try again in ${Math.max(1, Math.round(retryAfterS))} seconds.`
+    );
+  }
+}
+
+function fmtWait(s: number) {
+  if (s < 90) return `${Math.round(s)} seconds`;
+  if (s < 5400) return `${Math.round(s / 60)} minutes`;
+  return `${Math.round(s / 3600)} hours`;
+}
+
+let groqClient: Groq | null = null;
+function groq() {
+  if (aiMode !== "groq") throw new AiNotConfiguredError();
+  // retries are handled below so rate-limit waits respect the route's time limit
+  if (!groqClient) groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY, maxRetries: 0 });
+  return groqClient;
+}
+
+let geminiClient: GoogleGenAI | null = null;
 function gemini() {
-  if (aiMode !== "gemini") throw new AiNotConfiguredError();
-  if (!client) client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  return client;
+  if (!geminiClient) geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  return geminiClient;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const errText = (e: unknown) => String((e as Error)?.message ?? e);
-const isTimeout = (e: unknown) => /abort|timed? ?out|deadline/i.test(errText(e)) || (e as Error)?.name === "AbortError" || (e as Error)?.name === "TimeoutError";
-const isRateLimit = (e: unknown) => /429|RESOURCE_EXHAUSTED|quota/i.test(errText(e));
+const errStatus = (e: unknown) => (e as { status?: number })?.status;
+const isTimeout = (e: unknown) =>
+  /abort|timed? ?out|deadline/i.test(errText(e)) ||
+  ["AbortError", "TimeoutError", "APIConnectionTimeoutError"].includes((e as Error)?.name);
+
+/** Turn a Groq 429 into a typed error with how long to wait. */
+function asRateLimit(e: unknown, model: string): AiRateLimitError | null {
+  if (errStatus(e) !== 429 && !/rate.?limit/i.test(errText(e))) return null;
+  const headers = (e as { headers?: Headers }).headers;
+  let wait = Number(headers?.get?.("retry-after") ?? NaN);
+  const m = errText(e).match(/try again in ((\d+)h)?((\d+)m)?((\d+(?:\.\d+)?)s)?/i);
+  if (m && (m[2] || m[4] || m[6])) wait = Number(m[2] ?? 0) * 3600 + Number(m[4] ?? 0) * 60 + Number(m[6] ?? 0);
+  const perDay = /per day|\(RPD\)|\(TPD\)|daily/i.test(errText(e)) || wait > 600;
+  return new AiRateLimitError(perDay ? "day" : "minute", Number.isFinite(wait) ? wait : 0, model);
+}
 
 /** Plain-language reason for a failed AI call, safe to show to users. */
 export function aiErrorMessage(e: unknown): string {
-  if (e instanceof AiNotConfiguredError) return e.message;
-  if (isRateLimit(e)) return "The AI service's usage limit was reached. Wait a minute and try again.";
+  if (e instanceof AiNotConfiguredError || e instanceof AiRateLimitError) return e.message;
   if (isTimeout(e)) return "The AI service took too long to respond. Try again.";
-  if (/API key|API_KEY_INVALID|PERMISSION_DENIED|401|403/i.test(errText(e))) {
-    return "The Gemini API key was rejected. Check GEMINI_API_KEY in the Vercel settings.";
+  const status = errStatus(e);
+  if (status === 401 || /invalid api key|invalid_api_key/i.test(errText(e))) {
+    return "The Groq API key was rejected. Check GROQ_API_KEY in the Vercel settings.";
   }
-  if (/not found|404|is not supported/i.test(errText(e))) {
-    return `The model "${CHAT_MODEL}" isn't available for this key. Set GEMINI_CHAT_MODEL to another model.`;
+  if (status === 404 || /model_not_found|does not exist|decommissioned/i.test(errText(e))) {
+    return `A Groq model isn't available (${CHAT_MODEL} / ${EVAL_MODEL}). Set GROQ_CHAT_MODEL or GROQ_EVAL_MODEL to a current model.`;
   }
   return "The AI service returned an error. Try again in a minute.";
 }
 
-/** Retry rate-limit and transient server errors with short backoff. Timeouts are not retried. */
-async function withRetry<T>(label: string, fn: () => Promise<T>, tries = 3): Promise<T> {
+/**
+ * Retries transient errors. Per-minute rate limits are waited out when the wait fits within
+ * `maxWaitS`; otherwise (or for daily limits) an AiRateLimitError is thrown.
+ */
+async function withRetry<T>(label: string, model: string, fn: () => Promise<T>, maxWaitS = 8, tries = 3): Promise<T> {
   let last: unknown;
   for (let i = 0; i < tries; i++) {
     const t0 = Date.now();
     try {
       return await fn();
     } catch (e) {
+      console.error(`[groq] ${label} (${model}) failed after ${Date.now() - t0}ms, attempt ${i + 1}: ${errText(e).slice(0, 300)}`);
+      const rl = asRateLimit(e, model);
+      if (rl) {
+        if (rl.kind === "minute" && rl.retryAfterS <= maxWaitS && i < tries - 1) {
+          await sleep(Math.max(1, rl.retryAfterS) * 1000 + 250);
+          continue;
+        }
+        throw rl;
+      }
       last = e;
-      console.error(`[gemini] ${label} failed after ${Date.now() - t0}ms (attempt ${i + 1}): ${errText(e).slice(0, 300)}`);
-      const retriable = !isTimeout(e) && /429|RESOURCE_EXHAUSTED|503|UNAVAILABLE|500|INTERNAL|overloaded|fetch failed/i.test(errText(e));
+      const retriable = !isTimeout(e) && ((errStatus(e) ?? 0) >= 500 || /fetch failed|ECONNRESET|overloaded/i.test(errText(e)));
       if (!retriable || i === tries - 1) break;
-      await sleep([2500, 6000][i] ?? 6000);
+      await sleep([1500, 4000][i] ?? 4000);
     }
   }
   throw last;
 }
 
-/**
- * Reasoning is kept low: answers come from retrieved passages, so long "thinking" only adds
- * latency. If a model rejects the setting, it is dropped for the rest of the instance's life.
- */
-let thinkingSupported = true;
-function genConfig(extra: Record<string, unknown>, timeoutMs: number) {
-  return {
-    ...extra,
-    abortSignal: AbortSignal.timeout(timeoutMs),
-    ...(thinkingSupported ? { thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } } : {}),
-  };
-}
-async function withThinkingFallback<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (e) {
-    if (thinkingSupported && /thinking/i.test(errText(e))) {
-      thinkingSupported = false;
-      return await fn();
-    }
-    throw e;
-  }
+function reasoningParams(model: string) {
+  // gpt-oss models think before answering; "low" keeps answers fast and light on tokens
+  return isGptOss(model) ? { reasoning_effort: "low" as const, include_reasoning: false } : {};
 }
 
 // ---------- mock provider (local tests only) ----------
@@ -107,47 +148,55 @@ function mockEmbed(text: string): number[] {
   return Array.from(v, (x) => x / n);
 }
 
-// ---------- embeddings ----------
+// ---------- embeddings (optional) ----------
 
-export async function embedDocuments(items: { title: string; text: string }[]): Promise<number[][]> {
+/** Embeds passages, or returns null when embeddings are off or the service fails. */
+export async function embedDocuments(items: { title: string; text: string }[]): Promise<number[][] | null> {
+  if (!items.length || embedMode === "none") return null;
   const inputs = items.map((it) => `title: ${it.title} | text: ${it.text}`);
-  if (aiMode === "mock") return inputs.map(mockEmbed);
-  const out: number[][] = [];
-  const BATCH = 50;
-  for (let i = 0; i < inputs.length; i += BATCH) {
-    const batch = inputs.slice(i, i + BATCH);
-    const res = await withRetry("embed documents", () =>
-      gemini().models.embedContent({
+  if (embedMode === "mock") return inputs.map(mockEmbed);
+  try {
+    const out: number[][] = [];
+    for (let i = 0; i < inputs.length; i += 50) {
+      const batch = inputs.slice(i, i + 50);
+      const res = await gemini().models.embedContent({
         model: EMBED_MODEL,
         contents: batch.map((t) => ({ parts: [{ text: t }] })),
-        config: { outputDimensionality: EMBED_DIMS, abortSignal: AbortSignal.timeout(60_000) },
-      })
-    );
-    const embs = res.embeddings ?? [];
-    if (embs.length !== batch.length) {
-      throw new Error(`Embedding service returned ${embs.length} vectors for ${batch.length} chunks.`);
+        config: { outputDimensionality: EMBED_DIMS, abortSignal: AbortSignal.timeout(45_000) },
+      });
+      const embs = res.embeddings ?? [];
+      if (embs.length !== batch.length) throw new Error(`Got ${embs.length} vectors for ${batch.length} passages.`);
+      for (const e of embs) out.push(e.values ?? []);
     }
-    for (const e of embs) out.push(e.values ?? []);
+    return out;
+  } catch (e) {
+    console.error(`[gemini] embedding ${items.length} passages failed; using keyword search for them: ${errText(e).slice(0, 300)}`);
+    return null;
   }
-  return out;
 }
 
-export async function embedQuery(q: string): Promise<number[]> {
+/** Embeds a question, or returns null so search falls back to keywords. */
+export async function embedQuery(q: string): Promise<number[] | null> {
+  if (embedMode === "none") return null;
   const input = `task: question answering | query: ${q}`;
-  if (aiMode === "mock") return mockEmbed(input);
-  const res = await withRetry("embed query", () =>
-    gemini().models.embedContent({
+  if (embedMode === "mock") return mockEmbed(input);
+  try {
+    const res = await gemini().models.embedContent({
       model: EMBED_MODEL,
       contents: [{ parts: [{ text: input }] }],
-      config: { outputDimensionality: EMBED_DIMS, abortSignal: AbortSignal.timeout(15_000) },
-    })
-  );
-  return res.embeddings?.[0]?.values ?? [];
+      config: { outputDimensionality: EMBED_DIMS, abortSignal: AbortSignal.timeout(8_000) },
+    });
+    return res.embeddings?.[0]?.values ?? null;
+  } catch (e) {
+    console.error(`[gemini] query embedding failed; using keyword search: ${errText(e).slice(0, 300)}`);
+    return null;
+  }
 }
 
 // ---------- generation ----------
 
 export type ChatTurn = { role: "user" | "assistant"; text: string };
+export type PromptSource = { n: number; docName: string; locator: string; page: number; text: string };
 
 export const NOT_FOUND = "I couldn't find this in the published documents.";
 
@@ -157,15 +206,14 @@ Rules:
 - Cite every factual sentence with the source number in square brackets, like [1] or [2][3].
 - If the sources do not contain the answer, reply exactly: "${NOT_FOUND}" and nothing else.
 - Be concise and plain: short paragraphs or a short list. Quote exact figures, dates and names as written in the sources.
-- Do not mention "sources" or "context" by name in prose; just cite with brackets.`;
+- Do not mention "sources" or "context" by name in prose; just cite with brackets.
+- Plain text only: no tables, no headings, no HTML.`;
 
-function buildPrompt(question: string, sources: { n: number; docName: string; locator: string; page: number; text: string }[], history: ChatTurn[]) {
-  const ctx = sources
-    .map((s) => `[${s.n}] ${s.docName}, ${s.locator} ${s.page}\n${s.text}`)
-    .join("\n\n");
+function buildPrompt(question: string, sources: PromptSource[], history: ChatTurn[]) {
+  const ctx = sources.map((s) => `[${s.n}] ${s.docName}, ${s.locator} ${s.page}\n${s.text}`).join("\n\n");
   const hist = history
     .slice(-4)
-    .map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.text.slice(0, 600)}`)
+    .map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.text.slice(0, 500)}`)
     .join("\n");
   return `${hist ? `Earlier conversation (for context only):\n${hist}\n\n` : ""}Sources:\n${ctx}\n\nQuestion: ${question}`;
 }
@@ -184,62 +232,118 @@ function mockAnswer(question: string, sources: { n: number; text: string }[]) {
   return picks.length ? picks.join("\n\n") : NOT_FOUND;
 }
 
+async function openStream(
+  model: string,
+  question: string,
+  sources: PromptSource[],
+  history: ChatTurn[],
+  timeoutMs: number,
+  maxWaitS: number
+) {
+  return withRetry(
+    "answer",
+    model,
+    () =>
+      groq().chat.completions.create(
+        {
+          model,
+          messages: [
+            { role: "system", content: SYSTEM },
+            { role: "user", content: buildPrompt(question, sources, history) },
+          ],
+          temperature: 0.2,
+          max_completion_tokens: 1500,
+          stream: true,
+          ...reasoningParams(model),
+        },
+        { timeout: timeoutMs }
+      ),
+    maxWaitS
+  );
+}
+
 /**
- * Streams an answer. The whole call (including streaming) is capped at `timeoutMs`
- * so a slow model fails with a clear message instead of hitting the platform timeout.
+ * Streams an answer. If the main model is rate-limited before anything is sent,
+ * the fallback model (a separate Groq quota) answers instead, when allowed.
  */
 export async function* streamAnswer(
   question: string,
-  sources: { n: number; docName: string; locator: string; page: number; text: string }[],
+  sources: PromptSource[],
   history: ChatTurn[] = [],
-  timeoutMs = 40_000
+  opts: { timeoutMs?: number; allowFallback?: boolean; maxWaitS?: number } = {}
 ): AsyncGenerator<string> {
+  const { timeoutMs = 40_000, allowFallback = true, maxWaitS = 6 } = opts;
   if (aiMode === "mock") {
-    const text = mockAnswer(question, sources);
-    for (const word of text.split(/(?<= )/)) yield word;
+    for (const word of mockAnswer(question, sources).split(/(?<= )/)) yield word;
     return;
   }
   const t0 = Date.now();
-  const stream = await withRetry("answer", () =>
-    withThinkingFallback(() =>
-      gemini().models.generateContentStream({
-        model: CHAT_MODEL,
-        contents: [{ role: "user", parts: [{ text: buildPrompt(question, sources, history) }] }],
-        config: genConfig({ systemInstruction: SYSTEM, temperature: 0.2, maxOutputTokens: 4096 }, timeoutMs),
-      })
-    )
-  );
+  let model = CHAT_MODEL;
+  let stream;
+  try {
+    stream = await openStream(model, question, sources, history, timeoutMs, maxWaitS);
+  } catch (e) {
+    if (!(e instanceof AiRateLimitError) || !allowFallback || CHAT_FALLBACK_MODEL === CHAT_MODEL) throw e;
+    model = CHAT_FALLBACK_MODEL;
+    stream = await openStream(model, question, sources, history, timeoutMs, maxWaitS);
+  }
   let chars = 0;
   for await (const chunk of stream) {
-    if (chunk.text) {
-      chars += chunk.text.length;
-      yield chunk.text;
+    const text = chunk.choices?.[0]?.delta?.content;
+    if (text) {
+      chars += text.length;
+      yield text;
     }
   }
   if (!chars) throw new Error("The model returned an empty answer.");
-  console.log(`[gemini] answer ok in ${Date.now() - t0}ms, ${chars} chars`);
+  console.log(`[groq] answer ok (${model}) in ${Date.now() - t0}ms, ${chars} chars`);
 }
 
-export async function answerOnce(
-  question: string,
-  sources: { n: number; docName: string; locator: string; page: number; text: string }[]
-): Promise<string> {
+export async function answerOnce(question: string, sources: PromptSource[], maxWaitS = 25): Promise<string> {
   let out = "";
-  for await (const t of streamAnswer(question, sources)) out += t;
+  // evaluation measures the configured model, so it waits rather than switching models
+  for await (const t of streamAnswer(question, sources, [], { allowFallback: false, maxWaitS, timeoutMs: 45_000 })) out += t;
   return out.trim();
 }
 
-export async function generateJSON<T>(prompt: string, mock: () => T, timeoutMs = 45_000): Promise<T> {
+/** Structured JSON from the evaluation model, validated against a JSON schema. */
+export async function generateJSON<T>(
+  prompt: string,
+  schema: { name: string; schema: Record<string, unknown> },
+  mock: () => T,
+  opts: { timeoutMs?: number; maxWaitS?: number; maxTokens?: number } = {}
+): Promise<T> {
   if (aiMode === "mock") return mock();
-  const res = await withRetry("json", () =>
-    withThinkingFallback(() =>
-      gemini().models.generateContent({
-        model: CHAT_MODEL,
-        contents: [{ role: "user", parts: [{ text: prompt }] }],
-        config: genConfig({ temperature: 0.2, responseMimeType: "application/json", maxOutputTokens: 8192 }, timeoutMs),
-      })
-    )
-  );
-  const raw = (res.text ?? "").trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
+  const { timeoutMs = 45_000, maxWaitS = 25, maxTokens = 3000 } = opts;
+  const model = EVAL_MODEL;
+  const call = (strict: boolean) =>
+    withRetry(
+      "json",
+      model,
+      () =>
+        groq().chat.completions.create(
+          {
+            model,
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.2,
+            max_completion_tokens: maxTokens,
+            response_format: strict
+              ? { type: "json_schema", json_schema: { name: schema.name, strict: true, schema: schema.schema } }
+              : { type: "json_object" },
+            ...reasoningParams(model),
+          },
+          { timeout: timeoutMs }
+        ),
+      maxWaitS
+    );
+  let res;
+  try {
+    res = await call(true);
+  } catch (e) {
+    // models without strict structured outputs still support plain JSON mode
+    if (errStatus(e) === 400 && /response_format|json_schema|structured/i.test(errText(e))) res = await call(false);
+    else throw e;
+  }
+  const raw = (res.choices?.[0]?.message?.content ?? "").trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
   return JSON.parse(raw) as T;
 }

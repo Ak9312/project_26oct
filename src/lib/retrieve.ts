@@ -1,53 +1,75 @@
 import "server-only";
+import { bm25Scores, termOverlap } from "./bm25";
+import type { Loaded } from "./index-store";
 import { cosine } from "./text";
 import type { ChunkRecord } from "./types";
 
 export type Scored = { chunk: ChunkRecord; score: number };
 
-/** Two results this similar are treated as the same passage. */
+/** Two results this similar in meaning are treated as the same passage. */
 export const NEAR_DUP = 0.95;
+/** Two results sharing this much vocabulary are treated as the same passage. */
+export const NEAR_DUP_TERMS = 0.9;
 
-function rank(query: Float32Array, chunks: ChunkRecord[], vectors: Map<string, Float32Array>): Scored[] {
-  const out: Scored[] = [];
-  for (const c of chunks) {
-    const v = vectors.get(c.id);
-    if (v) out.push({ chunk: c, score: cosine(query, v) });
-  }
-  return out.sort((a, b) => b.score - a.score);
-}
+const RRF_K = 60;
+const POOL = 60;
+
+export type SearchMode = "hybrid" | "keyword";
 
 /**
- * Improved retrieval: top-k distinct passages. A candidate is skipped when its text hash
- * matches an already selected result or its embedding is near-identical to one.
+ * Ranks every passage for a question.
+ * - Keyword ranking (BM25) always runs.
+ * - When every passage has an embedding and the question could be embedded, meaning-based
+ *   ranking runs too, and the two lists are merged with reciprocal rank fusion.
  */
-export function retrieveUnique(
-  query: Float32Array,
-  chunks: ChunkRecord[],
-  vectors: Map<string, Float32Array>,
-  k = 5
-): Scored[] {
-  const ranked = rank(query, chunks, vectors);
+export function rankChunks(loaded: Loaded, question: string, queryVec: number[] | null): { ranked: Scored[]; mode: SearchMode } {
+  const byId = new Map(loaded.data.chunks.map((c) => [c.id, c]));
+  const kw = [...bm25Scores(loaded.bm25, question)].sort((a, b) => b[1] - a[1]).slice(0, POOL);
+
+  const useVectors = !!queryVec && loaded.vectorsComplete && queryVec.length === loaded.vectors.values().next().value?.length;
+  if (!useVectors) {
+    return { ranked: kw.map(([id, s]) => ({ chunk: byId.get(id)!, score: s })), mode: "keyword" };
+  }
+
+  const q = Float32Array.from(queryVec!);
+  const sem: [string, number][] = [];
+  for (const [id, v] of loaded.vectors) sem.push([id, cosine(q, v)]);
+  sem.sort((a, b) => b[1] - a[1]);
+
+  const fused = new Map<string, number>();
+  kw.forEach(([id], i) => fused.set(id, (fused.get(id) ?? 0) + 1 / (RRF_K + i + 1)));
+  sem.slice(0, POOL).forEach(([id], i) => fused.set(id, (fused.get(id) ?? 0) + 1 / (RRF_K + i + 1)));
+  const ranked = [...fused]
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, s]) => ({ chunk: byId.get(id)!, score: s }));
+  return { ranked, mode: "hybrid" };
+}
+
+function isNearDuplicate(loaded: Loaded, a: ChunkRecord, b: ChunkRecord) {
+  if (a.hash === b.hash) return true;
+  const va = loaded.vectors.get(a.id);
+  const vb = loaded.vectors.get(b.id);
+  if (va && vb && cosine(va, vb) >= NEAR_DUP) return true;
+  return termOverlap(loaded.bm25.tf.get(a.id), loaded.bm25.tf.get(b.id)) >= NEAR_DUP_TERMS;
+}
+
+/** Improved retrieval: the top-k *distinct* passages from a ranked list. */
+export function retrieveUnique(loaded: Loaded, ranked: Scored[], k = 5): Scored[] {
   const picked: Scored[] = [];
-  const hashes = new Set<string>();
   for (const cand of ranked) {
     if (picked.length >= k) break;
-    if (hashes.has(cand.chunk.hash)) continue;
-    const cv = vectors.get(cand.chunk.id)!;
-    if (picked.some((p) => cosine(cv, vectors.get(p.chunk.id)!) >= NEAR_DUP)) continue;
+    if (picked.some((p) => isNearDuplicate(loaded, p.chunk, cand.chunk))) continue;
     picked.push(cand);
-    hashes.add(cand.chunk.hash);
   }
   return picked;
 }
 
-/** Baseline retrieval as in the class notebook: plain top-k, no duplicate handling. */
-export function retrieveNaive(
-  query: Float32Array,
-  chunks: ChunkRecord[],
-  vectors: Map<string, Float32Array>,
-  k = 5
-): Scored[] {
-  return rank(query, chunks, vectors).slice(0, k);
+/**
+ * Baseline from the class notebook: every file indexed twice, plain top-k.
+ * Each passage therefore appears twice in a row in the ranking.
+ */
+export function retrieveNaive(ranked: Scored[], k = 5): Scored[] {
+  return ranked.flatMap((r) => [r, { chunk: { ...r.chunk, id: r.chunk.id + "#dup" }, score: r.score }]).slice(0, k);
 }
 
 /** Number of results in a list that repeat an earlier result's text. */

@@ -1,6 +1,7 @@
 import "server-only";
 import { readJSON, writeJSON } from "./storage";
 import { EMBED_DIMS, EMBED_MODEL } from "./ai";
+import { buildBm25, type Bm25Index } from "./bm25";
 import { decodeVector } from "./text";
 import type { IndexData } from "./types";
 
@@ -18,14 +19,37 @@ export function emptyIndex(): IndexData {
   };
 }
 
-type Loaded = { data: IndexData; vectors: Map<string, Float32Array>; at: number };
+export type Loaded = {
+  data: IndexData;
+  /** Embeddings by passage id (only passages that have one). */
+  vectors: Map<string, Float32Array>;
+  /** True when every passage has a compatible embedding, so meaning-based ranking is fair to all documents. */
+  vectorsComplete: boolean;
+  bm25: Bm25Index;
+  at: number;
+};
 let cache: Loaded | null = null;
 const MAX_AGE_MS = 20_000;
 
 function hydrate(data: IndexData): Loaded {
   const vectors = new Map<string, Float32Array>();
-  for (const c of data.chunks) vectors.set(c.id, decodeVector(c.emb));
-  return { data, vectors, at: Date.now() };
+  const compatible = data.embedModel === EMBED_MODEL && data.dims === EMBED_DIMS;
+  if (compatible) {
+    for (const c of data.chunks) {
+      if (!c.emb) continue;
+      const v = decodeVector(c.emb);
+      if (v.length === EMBED_DIMS) vectors.set(c.id, v);
+    }
+  }
+  // the document name is searchable too, so "water policy" finds the water policy
+  const bm25 = buildBm25(data.chunks.map((c) => ({ id: c.id, text: `${c.docName.replace(/\.[a-z]+$/i, "")} ${c.text}` })));
+  return {
+    data,
+    vectors,
+    vectorsComplete: data.chunks.length > 0 && vectors.size === data.chunks.length,
+    bm25,
+    at: Date.now(),
+  };
 }
 
 /** Index for reading (chat). Cached briefly per server instance. */

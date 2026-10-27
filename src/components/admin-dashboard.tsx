@@ -5,7 +5,15 @@ import { upload } from "@vercel/blob/client";
 import { Seal } from "./seal";
 import type { DocRecord, EvalQuestionSet, EvalResultRow, EvalSummary } from "@/lib/types";
 
-type Config = { storageMode: "blob" | "local"; aiMode: "gemini" | "mock" | "missing"; chatModel: string; embedModel: string };
+type Config = {
+  storageMode: "blob" | "local";
+  aiMode: "groq" | "mock" | "missing";
+  chatModel: string;
+  fallbackModel: string;
+  evalModel: string;
+  embedMode: "gemini" | "mock" | "none";
+  embedModel: string;
+};
 type DocsRes = { docs: DocRecord[]; chunkCount: number; stats: { duplicateFilesBlocked: number; duplicateChunksSkipped: number } };
 
 type QueueItem = {
@@ -93,7 +101,8 @@ export default function AdminDashboard() {
         const bits = [`${data.chunksCreated} passages indexed`];
         if (data.duplicateChunksSkipped) bits.push(`${data.duplicateChunksSkipped} repeated passages skipped`);
         if (data.boilerplateLinesRemoved) bits.push(`${data.boilerplateLinesRemoved} header and footer lines removed`);
-        update(key, { state: "done", message: (data.replaced ? "Replaced. " : "") + bits.join(", ") + "." });
+        const note = data.keywordOnly ? " The embedding service didn't respond, so it's keyword-searchable for now." : "";
+        update(key, { state: "done", message: (data.replaced ? "Replaced. " : "") + bits.join(", ") + "." + note });
       }
     } catch (e) {
       update(key, { state: "error", message: (e as Error).message || "Upload failed." });
@@ -181,12 +190,19 @@ export default function AdminDashboard() {
       <main className="admin-main">
         {config && (
           <div className="env-line">
-            <span className={"pill" + (config.aiMode === "gemini" ? " ok" : " warn")}>
-              {config.aiMode === "gemini"
-                ? `Gemini: ${config.chatModel} and ${config.embedModel}`
+            <span className={"pill" + (config.aiMode === "groq" ? " ok" : " warn")}>
+              {config.aiMode === "groq"
+                ? `Groq answers: ${config.chatModel} · tests: ${config.evalModel}`
                 : config.aiMode === "mock"
                   ? "Offline test mode (MOCK_AI): answers are not real"
-                  : "GEMINI_API_KEY missing: uploads and chat are off"}
+                  : "GROQ_API_KEY missing: chat and evaluation are off"}
+            </span>
+            <span className={"pill" + (config.embedMode === "none" ? "" : " ok")}>
+              {config.embedMode === "gemini"
+                ? `Search: keywords + meaning (${config.embedModel})`
+                : config.embedMode === "mock"
+                  ? "Search: keywords + mock embeddings"
+                  : "Search: keywords only (add GEMINI_API_KEY for meaning search)"}
             </span>
             <span className="pill">{config.storageMode === "blob" ? "Storage: private Vercel Blob" : "Storage: local .data folder"}</span>
           </div>
@@ -296,6 +312,9 @@ export default function AdminDashboard() {
               {libError}
             </p>
           )}
+          {docs && config && config.embedMode !== "none" && docs.docs.some((d) => (d.embeddedCount ?? 0) < d.chunkCount) && (
+            <EmbedBackfill onDone={refreshDocs} missing={docs.docs.reduce((a, d) => a + d.chunkCount - (d.embeddedCount ?? 0), 0)} />
+          )}
           {!docs ? (
             <p className="muted">Loading…</p>
           ) : docs.docs.length === 0 ? (
@@ -320,6 +339,7 @@ export default function AdminDashboard() {
                         <span className="doc-name">{d.name}</span>
                         <span className="muted small-text">
                           {fmtSize(d.size)} · fingerprint {d.sha256.slice(0, 10)}
+                          {config?.embedMode !== "none" && (d.embeddedCount ?? 0) < d.chunkCount ? " · keyword search only" : ""}
                         </span>
                       </td>
                       <td className="num">{d.pages}</td>
@@ -361,6 +381,41 @@ export default function AdminDashboard() {
   );
 }
 
+/** Adds embeddings to passages that only have keyword search, in batches. */
+function EmbedBackfill({ missing, onDone }: { missing: number; onDone: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  async function go() {
+    setBusy(true);
+    setMsg("");
+    try {
+      for (let i = 0; i < 40; i++) {
+        const r = await fetch("/api/admin/embeddings", { method: "POST" });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          setMsg(data.error ?? "Couldn't add meaning search. Try again later.");
+          break;
+        }
+        if (!data.remaining || !data.added) break;
+        setMsg(`${data.remaining} passages left…`);
+      }
+    } finally {
+      await onDone();
+      setBusy(false);
+    }
+  }
+  return (
+    <div className="notice notice-warn backfill" role="status">
+      <span>
+        {missing} passage{missing === 1 ? " is" : "s are"} searchable by keywords only. {msg}
+      </span>
+      <button className="btn small" onClick={go} disabled={busy}>
+        {busy ? "Adding…" : "Add meaning search"}
+      </button>
+    </div>
+  );
+}
+
 function Stat({ label, value }: { label: string; value?: number }) {
   return (
     <div className="stat">
@@ -376,7 +431,9 @@ function Evaluation({ hasDocs, aiReady }: { hasDocs: boolean; aiReady: boolean }
   const [set, setSet] = useState<EvalQuestionSet | null>(null);
   const [summary, setSummary] = useState<EvalSummary | null>(null);
   const [building, setBuilding] = useState(false);
-  const [run, setRun] = useState<{ done: number; total: number; rows: EvalResultRow[]; failed: number } | null>(null);
+  const [run, setRun] = useState<{ done: number; total: number; rows: EvalResultRow[]; failed: number; waiting?: number } | null>(
+    null
+  );
   const [error, setError] = useState("");
   const [showQs, setShowQs] = useState(false);
 
@@ -404,20 +461,44 @@ function Evaluation({ hasDocs, aiReady }: { hasDocs: boolean; aiReady: boolean }
     setError("");
     const rows: EvalResultRow[] = [];
     let failed = 0;
-    setRun({ done: 0, total: set.questions.length, rows, failed });
+    let stopped = "";
+    const total = set.questions.length;
+    setRun({ done: 0, total, rows, failed });
     for (const q of set.questions) {
-      const r = await fetch("/api/admin/eval/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: q.id }),
-      });
-      const data = await r.json().catch(() => ({}));
-      if (r.ok) rows.push(data.row);
-      else failed++;
-      setRun({ done: rows.length + failed, total: set.questions.length, rows: [...rows], failed });
+      let attempt = 0;
+      for (;;) {
+        const r = await fetch("/api/admin/eval/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: q.id }),
+        }).catch(() => null);
+        const data = r ? await r.json().catch(() => ({})) : {};
+        if (r?.ok) {
+          rows.push(data.row);
+          break;
+        }
+        if (r?.status === 429 && data.rateLimit === "day") {
+          stopped = data.error;
+          break;
+        }
+        if (r?.status === 429 && attempt < 4) {
+          // Groq's per-minute limit: wait it out, then retry the same question
+          attempt++;
+          const wait = Math.min(90, Math.max(5, data.retryAfterS ?? 20));
+          for (let left = wait; left > 0; left--) {
+            setRun({ done: rows.length + failed, total, rows: [...rows], failed, waiting: left });
+            await new Promise((res) => setTimeout(res, 1000));
+          }
+          continue;
+        }
+        failed++;
+        break;
+      }
+      setRun({ done: rows.length + failed, total, rows: [...rows], failed });
+      if (stopped) break;
     }
     if (!rows.length) {
-      setError("Every question failed. Check the Gemini key and quota, then try again.");
+      setError(stopped || "Every question failed. Check the Groq key in the Vercel settings, then try again.");
       setRun(null);
       return;
     }
@@ -429,7 +510,9 @@ function Evaluation({ hasDocs, aiReady }: { hasDocs: boolean; aiReady: boolean }
     const data = await r.json().catch(() => ({}));
     if (r.ok) setSummary(data.summary);
     else setError(data.error ?? "Couldn't save results.");
-    if (failed) setError(`${failed} question${failed > 1 ? "s" : ""} failed (often a rate limit) and were left out of the scores.`);
+    const skipped = total - rows.length;
+    if (stopped) setError(`${stopped} Scores cover the ${rows.length} questions finished so far.`);
+    else if (skipped) setError(`${skipped} question${skipped > 1 ? "s" : ""} failed and were left out of the scores.`);
     setRun(null);
   }
 
@@ -465,7 +548,11 @@ function Evaluation({ hasDocs, aiReady }: { hasDocs: boolean; aiReady: boolean }
           {building ? "Writing questions…" : set ? "Rebuild test set" : "Build 25 test questions"}
         </button>
         <button className="btn btn-seal" onClick={runAll} disabled={!set || !!run || building || !aiReady}>
-          {run ? `Running ${run.done} of ${run.total}…` : "Run evaluation"}
+          {run
+            ? run.waiting
+              ? `Groq limit, resuming in ${run.waiting}s…`
+              : `Running ${run.done + 1 > run.total ? run.total : run.done + 1} of ${run.total}…`
+            : "Run evaluation"}
         </button>
         {set && (
           <button className="btn btn-quiet" onClick={() => setShowQs((v) => !v)} aria-expanded={showQs}>
@@ -537,7 +624,9 @@ function Results({ summary, onDownload }: { summary: EvalSummary; onDownload: (k
     <div className="results top-gap">
       <div className="results-head">
         <p className="muted small-text">
-          Last run {fmtDate(summary.runAt)} · {summary.total} questions · {summary.aiMode === "mock" ? "offline test mode" : summary.chatModel}
+          Last run {fmtDate(summary.runAt)} · {summary.total} questions ·{" "}
+          {summary.aiMode === "mock" ? "offline test mode" : `answers ${summary.chatModel}${summary.judgeModel ? `, graded by ${summary.judgeModel}` : ""}`}
+          {summary.searchMode ? ` · ${summary.searchMode === "hybrid" ? "keyword + meaning search" : summary.searchMode === "keyword" ? "keyword search" : "mixed search"}` : ""}
         </p>
         <div className="row-gap">
           <button className="btn btn-quiet small" onClick={() => onDownload("csv")}>

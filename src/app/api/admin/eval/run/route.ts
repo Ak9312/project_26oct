@@ -1,5 +1,5 @@
 import { isAdmin, unauthorized } from "@/lib/auth";
-import { aiErrorMessage } from "@/lib/ai";
+import { aiErrorMessage, AiRateLimitError } from "@/lib/ai";
 import { loadQuestions, runOne } from "@/lib/eval";
 
 export const runtime = "nodejs";
@@ -16,6 +16,10 @@ export async function POST(req: Request) {
     return Response.json({ row: await runOne(q) });
   } catch (e) {
     console.error("eval question failed", e);
+    if (e instanceof AiRateLimitError) {
+      // the admin page waits this long and retries the same question
+      return Response.json({ error: e.message, rateLimit: e.kind, retryAfterS: Math.ceil(e.retryAfterS) || 20 }, { status: 429 });
+    }
     return Response.json({ error: aiErrorMessage(e) }, { status: 502 });
   }
 }

@@ -1,7 +1,9 @@
 import "server-only";
 import { parseFile, detectKind } from "./parse";
 import { chunkPages, stripBoilerplate } from "./chunk";
-import { embedDocuments } from "./ai";
+import { EMBED_DIMS, EMBED_MODEL, embedDocuments, embedMode } from "./ai";
+import { termOverlap, tokenize } from "./bm25";
+import { NEAR_DUP_TERMS } from "./retrieve";
 import { loadIndex, saveIndex, withIndexLock } from "./index-store";
 import { chunkHash, cosine, encodeVector, randomId, sha256 } from "./text";
 import { deleteFile, writeFileBuf } from "./storage";
@@ -29,6 +31,8 @@ export type IngestResult = {
   chunksCreated: number;
   duplicateChunksSkipped: number;
   boilerplateLinesRemoved: number;
+  /** Embeddings are configured but failed for this file, so it is keyword-searchable only. */
+  keywordOnly: boolean;
 };
 
 /** Check by file fingerprint before uploading. */
@@ -57,7 +61,8 @@ export async function ingestFile(opts: {
   if (!raw.length) throw new Error("No usable text was found in this file.");
 
   return withIndexLock(async () => {
-    const { data, vectors: existingVecs } = await loadIndex(true);
+    const loaded = await loadIndex(true);
+    const { data } = loaded;
 
     // 1) File-level duplicate: same bytes already indexed (the class-notebook bug).
     const existing = data.docs.find((d) => d.sha256 === fileHash);
@@ -99,22 +104,28 @@ export async function ingestFile(opts: {
       });
     }
 
-    // 3) Near duplicates: embeddings almost identical to an existing chunk.
-    const vectors = fresh.length
-      ? await embedDocuments(fresh.map((c) => ({ title: name, text: c.text })))
-      : [];
-    const pool: Float32Array[] = data.chunks
-      .map((c) => existingVecs.get(c.id))
-      .filter((v): v is Float32Array => !!v);
+    // 3) Near duplicates: almost the same vocabulary as an existing passage, or (when
+    //    embeddings are available) almost the same meaning.
+    const existingTerms = [...loaded.bm25.tf.values()];
+    const vectors = await embedDocuments(fresh.map((c) => ({ title: name, text: c.text })));
+    const pool: Float32Array[] = vectors ? [...loaded.vectors.values()] : [];
     const accepted: ChunkRecord[] = [];
+    const acceptedTerms: Map<string, number>[] = [];
     fresh.forEach((c, i) => {
-      const v = Float32Array.from(vectors[i]);
-      if (pool.some((p) => cosine(p, v) >= 0.985)) {
+      const terms = termCounts(c.text);
+      const sameWords =
+        terms.size >= 8 &&
+        (existingTerms.some((t) => termOverlap(t, terms) >= NEAR_DUP_TERMS) ||
+          acceptedTerms.some((t) => termOverlap(t, terms) >= NEAR_DUP_TERMS));
+      const v = vectors?.[i]?.length ? Float32Array.from(vectors[i]) : null;
+      const sameMeaning = !!v && pool.some((p) => p.length === v.length && cosine(p, v) >= 0.985);
+      if (sameWords || sameMeaning) {
         skipped++;
         return;
       }
-      pool.push(v);
-      accepted.push({ ...c, emb: encodeVector(v) });
+      if (v) pool.push(v);
+      acceptedTerms.push(terms);
+      accepted.push({ ...c, ...(v ? { emb: encodeVector(v) } : {}) });
     });
 
     // A file whose every passage is already indexed (e.g. the same document re-saved) adds nothing.
@@ -147,6 +158,7 @@ export async function ingestFile(opts: {
       boilerplateLinesRemoved: removed,
       uploadedAt: new Date().toISOString(),
       blobPathname,
+      embeddedCount: accepted.filter((c) => c.emb).length,
     };
     data.docs.push(doc);
     data.chunks.push(...accepted);
@@ -159,7 +171,50 @@ export async function ingestFile(opts: {
       chunksCreated: accepted.length,
       duplicateChunksSkipped: skipped,
       boilerplateLinesRemoved: removed,
+      keywordOnly: embedMode !== "none" && accepted.some((c) => !c.emb),
     };
+  });
+}
+
+function termCounts(text: string) {
+  const m = new Map<string, number>();
+  for (const t of tokenize(text)) m.set(t, (m.get(t) ?? 0) + 1);
+  return m;
+}
+
+/**
+ * Adds embeddings to passages indexed for keyword search only (for example when the
+ * embedding service was unavailable at upload, or GEMINI_API_KEY was added later).
+ * Works in batches so each call stays within the time limit.
+ */
+export async function addMissingEmbeddings(limit = 150) {
+  if (embedMode === "none") return { added: 0, remaining: 0, available: false };
+  const { data: snapshot } = await loadIndex(true);
+  const sameModel = snapshot.embedModel === EMBED_MODEL && snapshot.dims === EMBED_DIMS;
+  const todo = snapshot.chunks.filter((c) => !sameModel || !c.emb).slice(0, limit);
+  if (!todo.length) return { added: 0, remaining: 0, available: true };
+  const vectors = await embedDocuments(todo.map((c) => ({ title: c.docName, text: c.text })));
+  if (!vectors) throw new Error("The embedding service didn't respond. Search keeps working with keywords; try again later.");
+  return withIndexLock(async () => {
+    const { data } = await loadIndex(true);
+    if (!sameModel) {
+      // switching embedding model: old vectors can't be mixed with new ones
+      for (const c of data.chunks) delete c.emb;
+      data.embedModel = EMBED_MODEL;
+      data.dims = EMBED_DIMS;
+    }
+    const byId = new Map(todo.map((c, i) => [c.id, vectors[i]]));
+    let added = 0;
+    for (const c of data.chunks) {
+      const v = byId.get(c.id);
+      if (v?.length) {
+        c.emb = encodeVector(v);
+        added++;
+      }
+    }
+    for (const d of data.docs) d.embeddedCount = data.chunks.filter((c) => c.docId === d.id && c.emb).length;
+    await saveIndex(data);
+    return { added, remaining: data.chunks.filter((c) => !c.emb).length, available: true };
   });
 }
 

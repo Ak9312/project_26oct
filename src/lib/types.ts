@@ -12,6 +12,8 @@ export type DocRecord = {
   boilerplateLinesRemoved: number;
   uploadedAt: string;
   blobPathname?: string;
+  /** How many of this document's passages have embeddings (meaning-based search). */
+  embeddedCount?: number;
 };
 
 export type ChunkRecord = {
@@ -24,8 +26,8 @@ export type ChunkRecord = {
   text: string;
   /** SHA-256 of normalized text, used for exact-duplicate detection. */
   hash: string;
-  /** Float32 embedding, base64 encoded. */
-  emb: string;
+  /** Float32 embedding, base64 encoded. Empty when indexed for keyword search only. */
+  emb?: string;
 };
 
 export type IndexData = {
@@ -88,13 +90,18 @@ export type EvalResultRow = {
   correct: boolean;
   judgeNote: string;
   latencyMs: number;
+  searchMode?: "hybrid" | "keyword";
 };
 
 export type EvalSummary = {
   runAt: string;
   aiMode: string;
   chatModel: string;
+  /** Model that wrote the test questions and graded the answers. */
+  judgeModel?: string;
   embedModel: string;
+  /** "hybrid" = keywords + embeddings, "keyword" = keywords only. */
+  searchMode?: string;
   k: number;
   total: number;
   improved: { hitRate: number; mrr: number; duplicateRate: number };
