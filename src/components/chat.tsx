@@ -1,8 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { AnswerText, citedNumbers, HighlightedPassage, type UiSource } from "./answer";
-import { Seal } from "./seal";
+import { ArrowUp, BookOpen, FileText, LoaderCircle, SquarePen, TriangleAlert } from "lucide-react";
+import { AnswerText, citedNumbers, docTitle, HighlightedPassage, type UiSource } from "./answer";
+import { DemoBanner, SiteHeader } from "./site-header";
+import { Button } from "./ui/button";
+import { Alert, Badge, Card, CardContent, CardHeader, CardTitle, Textarea } from "./ui/primitives";
+import { cn } from "@/lib/utils";
+
+const REPO_URL = "https://github.com/Ak9312/project_26oct";
 
 type Library = { documents: { name: string; pages: number; kind: string }[]; chunkCount: number; suggestions: string[] };
 
@@ -30,13 +36,13 @@ export default function Chat() {
   }, []);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (msgs.length) endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [msgs]);
 
   async function ask(question: string) {
     const q = question.trim();
     if (!q) {
-      setInputError("Type a question first.");
+      setInputError("Enter a question first.");
       inputRef.current?.focus();
       return;
     }
@@ -97,120 +103,205 @@ export default function Chat() {
 
   const empty = msgs.length === 0;
   const docs = library?.documents ?? [];
+  const composer = (
+    <QuestionForm
+      big={empty}
+      value={input}
+      busy={busy}
+      error={inputError}
+      inputRef={inputRef}
+      onChange={(v) => {
+        setInput(v);
+        if (inputError) setInputError("");
+      }}
+      onSubmit={() => ask(input)}
+    />
+  );
 
   return (
-    <div className="shell">
-      <header className="topbar">
-        <div className="brand">
-          <Seal />
-          <span>Policy Knowledge Assistant</span>
-        </div>
-        {!empty && (
-          <button className="btn btn-quiet" onClick={() => setMsgs([])}>
-            New question
-          </button>
-        )}
-      </header>
+    <div className="flex min-h-dvh flex-col">
+      <SiteHeader
+        title="Policy Knowledge Assistant"
+        actions={
+          !empty && (
+            <Button variant="onBrand" size="sm" onClick={() => setMsgs([])} aria-label="New question">
+              <SquarePen />
+              <span className="hidden sm:inline">New question</span>
+            </Button>
+          )
+        }
+      />
+      <DemoBanner />
 
-      <main className="thread" aria-live="polite">
-        {empty && (
-          <section className="intro">
-            <h1 className="read intro-title">Ask what the policy actually says.</h1>
-            <p className="intro-sub">
-              Answers come only from the published documents below, and every answer shows the page it was taken from.
+      {empty ? (
+        <main className="mx-auto grid w-full max-w-6xl flex-1 gap-10 px-4 py-10 sm:px-6 lg:grid-cols-[minmax(0,1fr)_340px] lg:gap-14 lg:py-14">
+          <section>
+            <h1 className="max-w-[18ch] text-4xl font-bold leading-[1.1] tracking-tight sm:text-[44px]">Ask a question about public policy</h1>
+            <p className="mt-4 max-w-[56ch] text-lg leading-relaxed text-muted-foreground">
+              Answers are written only from the documents in the library, and every statement links to the page it came from.
             </p>
+            <div className="mt-8 max-w-2xl">{composer}</div>
 
             {library && library.suggestions.length > 0 && (
-              <div className="suggest">
-                <p className="label">Try one of these</p>
-                {library.suggestions.map((s) => (
-                  <button key={s} className="suggest-item" onClick={() => ask(s)} disabled={busy}>
-                    {s}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <div className="shelf">
-              <p className="label">In the library</p>
-              {libraryError && <p className="muted">The document list couldn&apos;t be loaded. Questions still work.</p>}
-              {!library && !libraryError && <p className="muted">Loading documents…</p>}
-              {library && docs.length === 0 && (
-                <p className="muted">No documents have been published yet. Check back soon.</p>
-              )}
-              {docs.length > 0 && (
-                <ul className="shelf-list">
-                  {docs.map((d) => (
-                    <li key={d.name}>
-                      <span className="spine" aria-hidden="true" />
-                      <span className="shelf-name">{d.name.replace(/\.(pdf|docx|txt|md)$/i, "")}</span>
-                      <span className="shelf-meta">
-                        {d.pages} {d.kind === "pdf" ? (d.pages === 1 ? "page" : "pages") : d.pages === 1 ? "section" : "sections"}
-                      </span>
+              <div className="mt-10 max-w-2xl">
+                <h2 className="text-base font-semibold">Example questions</h2>
+                <ul className="mt-3 divide-y border-y">
+                  {library.suggestions.map((s) => (
+                    <li key={s}>
+                      <button
+                        onClick={() => ask(s)}
+                        disabled={busy}
+                        className="w-full py-3 text-left text-[15px] text-link underline decoration-1 underline-offset-4 hover:decoration-2 focus-visible:outline-[3px] focus-visible:outline-ring"
+                      >
+                        {s}
+                      </button>
                     </li>
                   ))}
                 </ul>
-              )}
-            </div>
+              </div>
+            )}
           </section>
-        )}
 
-        {msgs.map((m) =>
-          m.role === "user" ? (
-            <h2 key={m.id} className="q">
-              {m.text}
-            </h2>
-          ) : (
-            <AssistantTurn key={m.id} msg={m} />
-          )
-        )}
-        <div ref={endRef} />
-      </main>
+          <aside className="space-y-6">
+            <Card>
+              <CardHeader className="flex-row items-center gap-2">
+                <BookOpen className="size-5 text-muted-foreground" aria-hidden />
+                <CardTitle className="text-base">Documents in the library</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-3">
+                {libraryError && <p className="text-sm text-muted-foreground">The document list couldn&apos;t be loaded. Questions still work.</p>}
+                {!library && !libraryError && <p className="text-sm text-muted-foreground">Loading documents…</p>}
+                {library && docs.length === 0 && <p className="text-sm text-muted-foreground">No documents have been published yet.</p>}
+                {docs.length > 0 && (
+                  <ul className="divide-y">
+                    {docs.map((d) => (
+                      <li key={d.name} className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
+                        <FileText className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+                        <span className="min-w-0 flex-1 text-sm font-medium leading-snug break-words">{docTitle(d.name)}</span>
+                        <span className="tabular shrink-0 text-xs text-muted-foreground">
+                          {d.pages} {d.kind === "pdf" ? (d.pages === 1 ? "page" : "pages") : d.pages === 1 ? "section" : "sections"}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
 
-      <form
-        className="composer"
-        onSubmit={(e) => {
-          e.preventDefault();
-          ask(input);
-        }}
-      >
-        <div className="composer-inner">
-          <label htmlFor="q" className="sr-only">
-            Your question
-          </label>
-          <textarea
-            id="q"
-            ref={inputRef}
-            className="field composer-field"
-            rows={1}
-            maxLength={600}
-            placeholder="Ask a question about the published policies"
-            value={input}
-            onChange={(e) => {
-              setInput(e.target.value);
-              if (inputError) setInputError("");
-            }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                ask(input);
-              }
-            }}
-            aria-invalid={!!inputError}
-            aria-describedby={inputError ? "q-err" : undefined}
-          />
-          <button type="submit" className="btn btn-seal" disabled={busy}>
-            {busy ? "Answering…" : "Ask"}
-          </button>
-        </div>
-        {inputError && (
-          <p id="q-err" className="field-error">
-            {inputError}
-          </p>
-        )}
-        <p className="fineprint">Answers are generated from the documents and can contain mistakes. Check the cited page.</p>
-      </form>
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">How answers are produced</CardTitle>
+              </CardHeader>
+              <CardContent className="pt-3">
+                <ol className="space-y-3 text-sm">
+                  {[
+                    ["Search", "The library is searched for the passages most relevant to your question."],
+                    ["Answer", "An answer is written using only those passages, never outside knowledge."],
+                    ["Cite", "Each statement links to its source page so you can check it."],
+                  ].map(([t, d], i) => (
+                    <li key={t} className="flex gap-3">
+                      <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-secondary text-xs font-bold text-secondary-foreground tabular">
+                        {i + 1}
+                      </span>
+                      <span>
+                        <span className="font-semibold">{t}.</span> <span className="text-muted-foreground">{d}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </CardContent>
+            </Card>
+          </aside>
+        </main>
+      ) : (
+        <main className="mx-auto w-full max-w-6xl flex-1 px-4 pb-6 sm:px-6" aria-live="polite">
+          {msgs.map((m, i) =>
+            m.role === "user" ? (
+              <h2 key={m.id} className={cn("text-2xl font-bold leading-snug tracking-tight", i === 0 ? "mt-8" : "mt-12 border-t pt-10")}>
+                {m.text}
+              </h2>
+            ) : (
+              <AssistantTurn key={m.id} msg={m} />
+            )
+          )}
+          <div ref={endRef} />
+        </main>
+      )}
+
+      {!empty && <div className="sticky bottom-0 z-10 border-t bg-background/95 backdrop-blur">{<div className="mx-auto max-w-6xl px-4 py-3 sm:px-6">{composer}</div>}</div>}
+
+      {empty && (
+        <footer className="border-t">
+          <div className="mx-auto flex max-w-6xl flex-col gap-2 px-4 py-6 text-sm text-muted-foreground sm:flex-row sm:justify-between sm:px-6">
+            <p>Answers can contain mistakes. Always check the cited page before relying on an answer.</p>
+            <a href={REPO_URL} className="text-link underline underline-offset-4" target="_blank" rel="noreferrer">
+              Source code and method
+            </a>
+          </div>
+        </footer>
+      )}
     </div>
+  );
+}
+
+function QuestionForm({
+  big,
+  value,
+  busy,
+  error,
+  inputRef,
+  onChange,
+  onSubmit,
+}: {
+  big: boolean;
+  value: string;
+  busy: boolean;
+  error: string;
+  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSubmit();
+      }}
+    >
+      <label htmlFor="q" className={big ? "mb-2 block text-base font-semibold" : "sr-only"}>
+        Your question
+      </label>
+      <div className="flex items-end gap-2">
+        <Textarea
+          id="q"
+          ref={inputRef}
+          rows={1}
+          maxLength={600}
+          placeholder="For example: what are the targets for school enrolment?"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+          aria-invalid={!!error}
+          aria-describedby={error ? "q-err" : undefined}
+          className={cn("resize-none [field-sizing:content] border-2 border-input", big ? "min-h-14 max-h-48 py-3.5 text-[17px]" : "min-h-11 max-h-40")}
+        />
+        <Button type="submit" size={big ? "lg" : "default"} disabled={busy} className={big ? "h-14" : "h-11"}>
+          {busy ? <LoaderCircle className="animate-spin" /> : <ArrowUp />}
+          {busy ? "Answering" : "Ask"}
+        </Button>
+      </div>
+      {error && (
+        <p id="q-err" className="mt-2 text-sm font-semibold text-destructive">
+          {error}
+        </p>
+      )}
+      {!big && <p className="mt-2 text-xs text-muted-foreground">Answers can contain mistakes. Check the cited page.</p>}
+    </form>
   );
 }
 
@@ -219,45 +310,52 @@ function AssistantTurn({ msg }: { msg: Extract<Msg, { role: "assistant" }> }) {
   const [focus, setFocus] = useState<number | null>(null);
   const refs = useRef<Record<number, HTMLElement | null>>({});
 
-  const notFound = msg.status === "done" && msg.text.trim().startsWith(NOT_FOUND_PREFIX);
+  const done = msg.status === "done";
+  const notFound = done && msg.text.trim().startsWith(NOT_FOUND_PREFIX);
   const cited = citedNumbers(msg.text);
   const citedSources = cited.map((n) => msg.sources.find((s) => s.n === n)).filter(Boolean) as UiSource[];
   const others = msg.sources.filter((s) => !cited.includes(s.n));
-  const visible = showAll || citedSources.length === 0 ? [...citedSources, ...others] : citedSources;
+  const visible = notFound ? msg.sources.slice(0, 3) : showAll || citedSources.length === 0 ? [...citedSources, ...others] : citedSources;
 
   function onCite(n: number) {
     if (!cited.includes(n)) setShowAll(true);
     setFocus(n);
     setTimeout(() => refs.current[n]?.scrollIntoView({ behavior: "smooth", block: "nearest" }), 30);
-    setTimeout(() => setFocus(null), 1600);
+    setTimeout(() => setFocus(null), 1800);
   }
 
   return (
-    <article className="turn">
-      {msg.status === "error" ? (
-        <div className="notice notice-danger" role="alert">
-          {msg.error}
-        </div>
-      ) : msg.text ? (
-        <AnswerText text={msg.text} onCite={onCite} streaming={msg.status === "streaming"} />
-      ) : (
-        <p className="muted searching">Searching the documents…</p>
-      )}
+    <article className="mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_380px] lg:gap-10">
+      <div className="min-w-0">
+        {msg.status === "error" ? (
+          <Alert variant="destructive">
+            <TriangleAlert />
+            <div>{msg.error}</div>
+          </Alert>
+        ) : msg.text ? (
+          <AnswerText text={msg.text} onCite={onCite} streaming={msg.status === "streaming"} />
+        ) : (
+          <p className="flex items-center gap-2 text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" aria-hidden />
+            Searching the documents…
+          </p>
+        )}
+      </div>
 
-      {msg.status === "done" && msg.sources.length > 0 && (
-        <section className="sources" aria-label="Sources">
-          <div className="sources-head">
-            <p className="label">
-              {notFound ? "Closest passages found" : citedSources.length === 1 ? "Source" : "Sources"}
-            </p>
+      {done && msg.sources.length > 0 && (
+        <aside aria-label="Sources" className="lg:sticky lg:top-4 lg:self-start">
+          <div className="mb-3 flex items-baseline justify-between gap-3">
+            <h3 className="text-sm font-bold">
+              {notFound ? "Closest passages found" : `Source${citedSources.length === 1 ? "" : "s"}`}
+            </h3>
             {!notFound && others.length > 0 && citedSources.length > 0 && (
-              <button className="btn btn-quiet small" onClick={() => setShowAll((v) => !v)}>
-                {showAll ? "Show cited only" : `Show all ${msg.sources.length} passages searched`}
-              </button>
+              <Button variant="link" size="sm" className="text-[13px]" onClick={() => setShowAll((v) => !v)}>
+                {showAll ? "Show cited only" : `Show all ${msg.sources.length} searched`}
+              </Button>
             )}
           </div>
-          <div className="source-list">
-            {(notFound ? msg.sources.slice(0, 3) : visible).map((s) => (
+          <div className="space-y-3">
+            {visible.map((s) => (
               <SourceCard
                 key={s.chunkId}
                 s={s}
@@ -270,7 +368,7 @@ function AssistantTurn({ msg }: { msg: Extract<Msg, { role: "assistant" }> }) {
               />
             ))}
           </div>
-        </section>
+        </aside>
       )}
     </article>
   );
@@ -290,22 +388,41 @@ function SourceCard({
   refCb: (el: HTMLElement | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const long = s.text.length > 420;
+  const long = s.text.length > 380;
   return (
-    <figure ref={refCb} className={"source" + (focused ? " is-focused" : "") + (cited ? "" : " is-uncited")}>
-      <div className="source-tab">
-        <span className="source-n">{s.n}</span>
-        {s.locator === "Page" ? "p." : "§"} {s.page}
-      </div>
-      <div className="source-body">
-        <figcaption className="source-doc">{s.docName}</figcaption>
-        <div className={long && !open ? "clamp" : ""}>
-          <HighlightedPassage text={s.text} answer={answer} />
-        </div>
+    <figure
+      ref={refCb}
+      className={cn(
+        "scroll-mt-24 rounded-md border bg-card transition-shadow",
+        cited ? "border-l-4 border-l-primary" : "border-l-4 border-l-border",
+        focused && "ring-[3px] ring-ring"
+      )}
+    >
+      <figcaption className="flex items-start gap-2.5 border-b px-3.5 py-2.5">
+        <span
+          className={cn(
+            "mt-px flex size-5 shrink-0 items-center justify-center rounded-[4px] text-[11px] font-bold tabular",
+            cited ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"
+          )}
+        >
+          {s.n}
+        </span>
+        <span className="min-w-0 flex-1 text-sm font-semibold leading-snug break-words">{docTitle(s.docName)}</span>
+        <Badge variant="secondary" className="tabular">
+          {s.locator} {s.page}
+        </Badge>
+      </figcaption>
+      <div className="px-3.5 py-3">
+        <HighlightedPassage
+          text={s.text}
+          answer={answer}
+          excerpt={long && !open}
+          className={cn("text-sm leading-relaxed text-muted-foreground", long && !open && "line-clamp-6")}
+        />
         {long && (
-          <button className="btn btn-quiet small more" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          <Button variant="link" size="sm" className="mt-1.5 text-[13px]" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
             {open ? "Show less" : "Read full passage"}
-          </button>
+          </Button>
         )}
       </div>
     </figure>

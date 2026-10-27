@@ -2,7 +2,43 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
-import { Seal } from "./seal";
+import {
+  ChevronDown,
+  CircleCheck,
+  Database,
+  Download,
+  ExternalLink,
+  FileText,
+  FlaskConical,
+  Info,
+  LoaderCircle,
+  Search,
+  Sparkles,
+  Trash2,
+  TriangleAlert,
+  Upload,
+} from "lucide-react";
+import { SiteHeader } from "./site-header";
+import { docTitle } from "./answer";
+import { Button } from "./ui/button";
+import { Alert, Badge, Card, CardContent, CardDescription, CardHeader, CardTitle, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/primitives";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+  Progress,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "./ui/radix";
+import { cn } from "@/lib/utils";
 import type { DocRecord, EvalQuestionSet, EvalResultRow, EvalSummary } from "@/lib/types";
 
 type Config = {
@@ -45,8 +81,6 @@ export default function AdminDashboard() {
   const [docs, setDocs] = useState<DocsRes | null>(null);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [dragging, setDragging] = useState(false);
-  // Remove uses an inline two-step confirm (browser pop-ups can be blocked or suppressed).
-  const [confirming, setConfirming] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [libError, setLibError] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -158,226 +192,355 @@ export default function AdminDashboard() {
         return;
       }
       const data = await r.json().catch(() => ({}));
-      if (!r.ok && r.status !== 404) {
-        setLibError(data.error ?? "Couldn't remove the document. Try again.");
-      } else if (data.docs) {
-        setDocs({ docs: data.docs, chunkCount: data.chunkCount, stats: data.stats });
-      } else {
-        await refreshDocs();
-      }
+      if (!r.ok && r.status !== 404) setLibError(data.error ?? "Couldn't remove the document. Try again.");
+      else if (data.docs) setDocs({ docs: data.docs, chunkCount: data.chunkCount, stats: data.stats });
+      else await refreshDocs();
     } catch {
       setLibError("Couldn't reach the server. Check your connection and try again.");
     } finally {
       setRemoving(null);
-      setConfirming(null);
     }
   }
 
+  const keywordOnly = docs && config && config.embedMode !== "none" ? docs.docs.reduce((a, d) => a + d.chunkCount - (d.embeddedCount ?? 0), 0) : 0;
+
   return (
-    <div className="admin">
-      <header className="topbar">
-        <span className="brand">
-          <Seal />
-          <span>Document admin</span>
-        </span>
-        <div className="row-gap">
-          <a className="btn btn-quiet" href="/" target="_blank" rel="noreferrer">
-            Open public chat
-          </a>
+    <div className="min-h-dvh bg-muted/40">
+      <SiteHeader
+        title="Policy Knowledge Assistant"
+        tag="Admin"
+        actions={
+          <Button variant="onBrand" size="sm" asChild>
+            <a href="/" target="_blank" rel="noreferrer">
+              <ExternalLink />
+              <span className="hidden sm:inline">Open public site</span>
+              <span className="sm:hidden">Public site</span>
+            </a>
+          </Button>
+        }
+      />
+
+      <main className="mx-auto max-w-6xl space-y-6 px-4 py-8 sm:px-6">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Document administration</h1>
+          <p className="mt-1.5 text-muted-foreground">Manage what the public assistant answers from, and measure how well it answers.</p>
         </div>
-      </header>
 
-      <main className="admin-main">
-        {config && (
-          <div className="env-line">
-            <span className={"pill" + (config.aiMode === "groq" ? " ok" : " warn")}>
-              {config.aiMode === "groq"
-                ? `Groq answers: ${config.chatModel} · tests: ${config.evalModel}`
-                : config.aiMode === "mock"
-                  ? "Offline test mode (MOCK_AI): answers are not real"
-                  : "GROQ_API_KEY missing: chat and evaluation are off"}
-            </span>
-            <span className={"pill" + (config.embedMode === "none" ? "" : " ok")}>
-              {config.embedMode === "gemini"
-                ? `Search: keywords + meaning (${config.embedModel})`
-                : config.embedMode === "mock"
-                  ? "Search: keywords + mock embeddings"
-                  : "Search: keywords only (add GEMINI_API_KEY for meaning search)"}
-            </span>
-            <span className="pill">{config.storageMode === "blob" ? "Storage: private Vercel Blob" : "Storage: local .data folder"}</span>
-          </div>
-        )}
+        {config && <StatusStrip config={config} />}
 
-        <section className="stats" aria-label="Library totals">
-          <Stat label="Documents" value={docs?.docs.length} />
-          <Stat label="Passages indexed" value={docs?.chunkCount} />
-          <Stat label="Duplicate uploads blocked" value={docs?.stats.duplicateFilesBlocked} />
-          <Stat label="Repeated passages skipped" value={docs?.stats.duplicateChunksSkipped} />
+        <section aria-label="Library totals" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <Stat icon={<FileText />} label="Documents" value={docs?.docs.length} />
+          <Stat icon={<Database />} label="Passages indexed" value={docs?.chunkCount} />
+          <Stat icon={<CircleCheck />} label="Duplicate uploads blocked" value={docs?.stats.duplicateFilesBlocked} tone="success" />
+          <Stat icon={<CircleCheck />} label="Repeated passages skipped" value={docs?.stats.duplicateChunksSkipped} tone="success" />
         </section>
 
-        <section className="panel">
-          <h2 className="panel-title">Upload documents</h2>
-          <p className="panel-sub">
-            Each file is checked by fingerprint first, so the same document can&apos;t be indexed twice. Repeated headers,
-            footers and passages are removed before indexing.
-          </p>
-          <div
-            className={"drop" + (dragging ? " is-drag" : "")}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragging(true);
-            }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragging(false);
-              addFiles(e.dataTransfer.files);
-            }}
-          >
-            <input
-              ref={fileInput}
-              type="file"
-              accept={ACCEPT}
-              multiple
-              hidden
-              onChange={(e) => {
-                addFiles(e.target.files);
-                e.target.value = "";
-              }}
-            />
-            <button className="btn btn-seal" onClick={() => fileInput.current?.click()} disabled={config?.aiMode === "missing"}>
-              Choose files
-            </button>
-            <span className="muted">or drop them here. PDF, Word (.docx), .txt or .md, up to 10 MB each.</span>
-          </div>
+        <Tabs defaultValue="documents">
+          <TabsList>
+            <TabsTrigger value="documents">
+              <FileText />
+              Documents
+            </TabsTrigger>
+            <TabsTrigger value="evaluation">
+              <FlaskConical />
+              Evaluation
+            </TabsTrigger>
+          </TabsList>
 
-          {queue.length > 0 && (
-            <ul className="queue">
-              {queue.map((it) => (
-                <li key={it.key} className={"q-item is-" + it.state}>
-                  <div className="q-main">
-                    <span className="q-name">{it.file.name}</span>
-                    <span className="q-state">
-                      {it.state === "hashing" && "Checking for duplicates…"}
-                      {it.state === "uploading" && `Uploading ${Math.round(it.progress ?? 0)}%`}
-                      {it.state === "indexing" && "Reading, splitting and indexing…"}
-                      {it.state === "done" && "Indexed"}
-                      {it.state === "duplicate" && "Duplicate"}
-                      {it.state === "skipped" && "Skipped"}
-                      {it.state === "error" && "Failed"}
-                    </span>
-                  </div>
-                  {it.message && <p className="q-msg">{it.message}</p>}
-                  {it.state === "duplicate" && it.existing && it.match === "file" && (
-                    <div className="q-actions">
-                      <span className="muted">
-                        Uploaded {fmtDate(it.existing.uploadedAt)} as “{it.existing.name}”.
-                      </span>
-                      <button className="btn small" onClick={() => sendToIndex(it, true)}>
-                        Replace existing
-                      </button>
-                      <button className="btn btn-quiet small" onClick={() => update(it.key, { state: "skipped", message: "Kept the existing copy." })}>
-                        Keep existing
-                      </button>
-                    </div>
+          <TabsContent value="documents" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Upload documents</CardTitle>
+                <CardDescription>
+                  Each file is fingerprinted first, so the same document can&apos;t be indexed twice. Repeated headers, footers and passages
+                  are removed before indexing.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragging(true);
+                  }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragging(false);
+                    addFiles(e.dataTransfer.files);
+                  }}
+                  className={cn(
+                    "flex flex-col items-center justify-center gap-3 rounded-md border-2 border-dashed px-6 py-8 text-center transition-colors",
+                    dragging ? "border-primary bg-info-soft" : "border-border bg-muted/50"
                   )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section className="panel">
-          <div className="panel-head">
-            <h2 className="panel-title">Library</h2>
-            {docs && docs.docs.length > 1 &&
-              (confirming === "all" ? (
-                <div className="row-gap">
-                  <span className="danger-text small-text">Remove all {docs.docs.length} documents?</span>
-                  <button className="btn small btn-danger" onClick={() => removeDocs("all")} disabled={removing === "all"}>
-                    {removing === "all" ? "Removing…" : "Yes, remove all"}
-                  </button>
-                  <button className="btn btn-quiet small" onClick={() => setConfirming(null)} disabled={removing === "all"}>
-                    Cancel
-                  </button>
+                >
+                  <Upload className="size-6 text-muted-foreground" aria-hidden />
+                  <div>
+                    <p className="font-semibold">Drop files here, or choose them</p>
+                    <p className="text-sm text-muted-foreground">PDF, Word (.docx), .txt or .md, up to 10 MB each</p>
+                  </div>
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    accept={ACCEPT}
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      addFiles(e.target.files);
+                      e.target.value = "";
+                    }}
+                  />
+                  <Button onClick={() => fileInput.current?.click()} disabled={config?.aiMode === "missing"}>
+                    Choose files
+                  </Button>
                 </div>
-              ) : (
-                <button className="btn btn-quiet small danger-text" onClick={() => setConfirming("all")} disabled={!!removing}>
-                  Remove all
-                </button>
-              ))}
-          </div>
-          {libError && (
-            <p className="notice notice-danger" role="alert">
-              {libError}
-            </p>
-          )}
-          {docs && config && config.embedMode !== "none" && docs.docs.some((d) => (d.embeddedCount ?? 0) < d.chunkCount) && (
-            <EmbedBackfill onDone={refreshDocs} missing={docs.docs.reduce((a, d) => a + d.chunkCount - (d.embeddedCount ?? 0), 0)} />
-          )}
-          {!docs ? (
-            <p className="muted">Loading…</p>
-          ) : docs.docs.length === 0 ? (
-            <p className="muted">No documents yet. Upload your first policy document above; it appears in the public chat as soon as it&apos;s indexed.</p>
-          ) : (
-            <div className="table-wrap">
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th>Document</th>
-                    <th className="num">Pages</th>
-                    <th className="num">Passages</th>
-                    <th className="num">Repeats skipped</th>
-                    <th>Added</th>
-                    <th aria-label="Actions" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {docs.docs.map((d) => (
-                    <tr key={d.id}>
-                      <td>
-                        <span className="doc-name">{d.name}</span>
-                        <span className="muted small-text">
-                          {fmtSize(d.size)} · fingerprint {d.sha256.slice(0, 10)}
-                          {config?.embedMode !== "none" && (d.embeddedCount ?? 0) < d.chunkCount ? " · keyword search only" : ""}
-                        </span>
-                      </td>
-                      <td className="num">{d.pages}</td>
-                      <td className="num">{d.chunkCount}</td>
-                      <td className="num">{d.duplicateChunksSkipped}</td>
-                      <td className="nowrap">{fmtDate(d.uploadedAt)}</td>
-                      <td className="nowrap">
-                        {confirming === d.id ? (
-                          <div className="row-gap">
-                            <button className="btn small btn-danger" onClick={() => removeDocs(d)} disabled={removing === d.id}>
-                              {removing === d.id ? "Removing…" : "Confirm"}
-                            </button>
-                            <button className="btn btn-quiet small" onClick={() => setConfirming(null)} disabled={removing === d.id}>
-                              Cancel
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            className="btn btn-quiet small danger-text"
-                            onClick={() => setConfirming(d.id)}
-                            disabled={!!removing}
-                            aria-label={`Remove ${d.name}`}
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
 
-        <Evaluation hasDocs={(docs?.chunkCount ?? 0) > 0} aiReady={config?.aiMode !== "missing"} />
+                {queue.length > 0 && (
+                  <ul className="space-y-2">
+                    {queue.map((it) => (
+                      <UploadRow
+                        key={it.key}
+                        it={it}
+                        onReplace={() => sendToIndex(it, true)}
+                        onKeep={() => update(it.key, { state: "skipped", message: "Kept the existing copy." })}
+                      />
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex-row flex-wrap items-start justify-between gap-3">
+                <div>
+                  <CardTitle>Library</CardTitle>
+                  <CardDescription>Documents published to the public assistant.</CardDescription>
+                </div>
+                {docs && docs.docs.length > 1 && (
+                  <ConfirmRemove
+                    title={`Remove all ${docs.docs.length} documents?`}
+                    body="Every document, its passages and its test questions are removed from the library. The public assistant will have nothing to answer from."
+                    confirm="Remove all"
+                    onConfirm={() => removeDocs("all")}
+                  >
+                    <Button variant="outline" size="sm" className="text-destructive" disabled={!!removing}>
+                      {removing === "all" ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+                      Remove all
+                    </Button>
+                  </ConfirmRemove>
+                )}
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {libError && (
+                  <Alert variant="destructive">
+                    <TriangleAlert />
+                    <div>{libError}</div>
+                  </Alert>
+                )}
+                {keywordOnly > 0 && <EmbedBackfill onDone={refreshDocs} missing={keywordOnly} />}
+                {!docs ? (
+                  <p className="text-sm text-muted-foreground">Loading…</p>
+                ) : docs.docs.length === 0 ? (
+                  <div className="rounded-md border border-dashed px-6 py-10 text-center">
+                    <p className="font-semibold">Add your first document</p>
+                    <p className="mt-1 text-sm text-muted-foreground">It appears in the public assistant as soon as it&apos;s indexed.</p>
+                  </div>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Document</TableHead>
+                        <TableHead className="text-right">Pages</TableHead>
+                        <TableHead className="text-right">Passages</TableHead>
+                        <TableHead className="text-right">Repeats skipped</TableHead>
+                        <TableHead>Added</TableHead>
+                        <TableHead>
+                          <span className="sr-only">Actions</span>
+                        </TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {docs.docs.map((d) => (
+                        <TableRow key={d.id}>
+                          <TableCell className="min-w-56">
+                            <div className="font-semibold break-words">{docTitle(d.name)}</div>
+                            <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+                              <span>{fmtSize(d.size)}</span>
+                              <span>Fingerprint {d.sha256.slice(0, 10)}</span>
+                              {config?.embedMode !== "none" && (d.embeddedCount ?? 0) < d.chunkCount && (
+                                <Badge variant="warning">Keyword search only</Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell className="tabular text-right">{d.pages}</TableCell>
+                          <TableCell className="tabular text-right">{d.chunkCount}</TableCell>
+                          <TableCell className="tabular text-right">{d.duplicateChunksSkipped}</TableCell>
+                          <TableCell className="whitespace-nowrap text-muted-foreground">{fmtDate(d.uploadedAt)}</TableCell>
+                          <TableCell className="text-right">
+                            <ConfirmRemove
+                              title={`Remove “${docTitle(d.name)}”?`}
+                              body={`Its ${d.chunkCount} passage${d.chunkCount === 1 ? "" : "s"} and any test questions written from it are removed. This can't be undone.`}
+                              confirm="Remove document"
+                              onConfirm={() => removeDocs(d)}
+                            >
+                              <Button variant="ghost" size="sm" className="text-destructive" disabled={!!removing} aria-label={`Remove ${d.name}`}>
+                                {removing === d.id ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+                                Remove
+                              </Button>
+                            </ConfirmRemove>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="evaluation" forceMount className="data-[state=inactive]:hidden">
+            <Evaluation hasDocs={(docs?.chunkCount ?? 0) > 0} aiReady={config?.aiMode !== "missing"} />
+          </TabsContent>
+        </Tabs>
       </main>
     </div>
+  );
+}
+
+function StatusStrip({ config }: { config: Config }) {
+  const items = [
+    {
+      ok: config.aiMode === "groq",
+      warn: config.aiMode !== "groq",
+      label: "Answers",
+      value:
+        config.aiMode === "groq"
+          ? `Groq ${config.chatModel.replace("openai/", "")}`
+          : config.aiMode === "mock"
+            ? "Offline test mode, answers aren't real"
+            : "GROQ_API_KEY missing, chat is off",
+    },
+    {
+      ok: config.aiMode === "groq",
+      warn: config.aiMode !== "groq",
+      label: "Testing and grading",
+      value: config.aiMode === "groq" ? `Groq ${config.evalModel.replace("openai/", "")}` : "Unavailable",
+    },
+    {
+      ok: config.embedMode !== "none",
+      warn: false,
+      label: "Search",
+      value: config.embedMode === "gemini" ? "Keywords and meaning" : config.embedMode === "mock" ? "Keywords and mock meaning" : "Keywords only",
+    },
+    { ok: true, warn: false, label: "Storage", value: config.storageMode === "blob" ? "Private Vercel Blob" : "Local folder" },
+  ];
+  return (
+    <Card>
+      <dl className="grid divide-y sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4 lg:divide-x">
+        {items.map((it) => (
+          <div key={it.label} className="flex items-start gap-2.5 px-5 py-3.5">
+            {it.warn ? (
+              <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+            ) : it.ok ? (
+              <CircleCheck className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
+            ) : (
+              <Info className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+            )}
+            <div className="min-w-0">
+              <dt className="text-xs font-semibold text-muted-foreground">{it.label}</dt>
+              <dd className="text-sm font-semibold break-words">{it.value}</dd>
+            </div>
+          </div>
+        ))}
+      </dl>
+    </Card>
+  );
+}
+
+function Stat({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value?: number; tone?: "success" }) {
+  return (
+    <Card className="px-5 py-4">
+      <div className={cn("flex items-center gap-2 text-sm text-muted-foreground [&_svg]:size-4", tone === "success" && "[&_svg]:text-success")}>
+        {icon}
+        {label}
+      </div>
+      <div className="tabular mt-1.5 text-3xl font-bold tracking-tight">{value ?? "–"}</div>
+    </Card>
+  );
+}
+
+function UploadRow({ it, onReplace, onKeep }: { it: QueueItem; onReplace: () => void; onKeep: () => void }) {
+  const status = {
+    hashing: { text: "Checking for duplicates", variant: "secondary" as const },
+    uploading: { text: `Uploading ${Math.round(it.progress ?? 0)}%`, variant: "secondary" as const },
+    indexing: { text: "Reading and indexing", variant: "secondary" as const },
+    done: { text: "Indexed", variant: "success" as const },
+    duplicate: { text: "Duplicate blocked", variant: "warning" as const },
+    skipped: { text: "Skipped", variant: "secondary" as const },
+    error: { text: "Failed", variant: "destructive" as const },
+  }[it.state];
+  const busy = it.state === "hashing" || it.state === "uploading" || it.state === "indexing";
+  return (
+    <li
+      className={cn(
+        "rounded-md border border-l-4 px-4 py-3",
+        it.state === "done" && "border-l-success",
+        it.state === "duplicate" && "border-l-warning bg-warning-soft/60",
+        it.state === "error" && "border-l-destructive bg-destructive-soft/60",
+        (busy || it.state === "skipped") && "border-l-border"
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex min-w-0 items-center gap-2 font-semibold">
+          {busy ? <LoaderCircle className="size-4 shrink-0 animate-spin text-muted-foreground" aria-hidden /> : <FileText className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
+          <span className="break-all">{it.file.name}</span>
+        </span>
+        <Badge variant={status.variant}>{status.text}</Badge>
+      </div>
+      {it.message && <p className="mt-1.5 text-sm text-muted-foreground">{it.message}</p>}
+      {it.state === "duplicate" && it.existing && it.match === "file" && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-2 text-sm">
+          <span className="text-muted-foreground">
+            Uploaded {fmtDate(it.existing.uploadedAt)} as “{it.existing.name}”.
+          </span>
+          <Button variant="outline" size="sm" onClick={onReplace}>
+            Replace existing
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onKeep}>
+            Keep existing
+          </Button>
+        </div>
+      )}
+    </li>
+  );
+}
+
+function ConfirmRemove({
+  title,
+  body,
+  confirm,
+  onConfirm,
+  children,
+}: {
+  title: string;
+  body: string;
+  confirm: string;
+  onConfirm: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>{children}</AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{body}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction onClick={onConfirm}>{confirm}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -405,23 +568,16 @@ function EmbedBackfill({ missing, onDone }: { missing: number; onDone: () => Pro
     }
   }
   return (
-    <div className="notice notice-warn backfill" role="status">
-      <span>
+    <Alert variant="warning" role="status" className="flex-wrap items-center">
+      <Search />
+      <div className="flex-1">
         {missing} passage{missing === 1 ? " is" : "s are"} searchable by keywords only. {msg}
-      </span>
-      <button className="btn small" onClick={go} disabled={busy}>
-        {busy ? "Adding…" : "Add meaning search"}
-      </button>
-    </div>
-  );
-}
-
-function Stat({ label, value }: { label: string; value?: number }) {
-  return (
-    <div className="stat">
-      <span className="stat-value">{value ?? "–"}</span>
-      <span className="stat-label">{label}</span>
-    </div>
+      </div>
+      <Button variant="outline" size="sm" onClick={go} disabled={busy}>
+        {busy ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+        {busy ? "Adding" : "Add meaning search"}
+      </Button>
+    </Alert>
   );
 }
 
@@ -431,11 +587,8 @@ function Evaluation({ hasDocs, aiReady }: { hasDocs: boolean; aiReady: boolean }
   const [set, setSet] = useState<EvalQuestionSet | null>(null);
   const [summary, setSummary] = useState<EvalSummary | null>(null);
   const [building, setBuilding] = useState(false);
-  const [run, setRun] = useState<{ done: number; total: number; rows: EvalResultRow[]; failed: number; waiting?: number } | null>(
-    null
-  );
+  const [run, setRun] = useState<{ done: number; total: number; rows: EvalResultRow[]; failed: number; waiting?: number } | null>(null);
   const [error, setError] = useState("");
-  const [showQs, setShowQs] = useState(false);
 
   useEffect(() => {
     // questions first: loading them also clears any left over from removed documents
@@ -450,10 +603,8 @@ function Evaluation({ hasDocs, aiReady }: { hasDocs: boolean; aiReady: boolean }
     const r = await fetch("/api/admin/eval/questions", { method: "POST" });
     const data = await r.json().catch(() => ({}));
     setBuilding(false);
-    if (r.ok) {
-      setSet(data.set);
-      setShowQs(true);
-    } else setError(data.error ?? "Couldn't build the test set.");
+    if (r.ok) setSet(data.set);
+    else setError(data.error ?? "Couldn't build the test set.");
   }
 
   async function runAll() {
@@ -536,62 +687,63 @@ function Evaluation({ hasDocs, aiReady }: { hasDocs: boolean; aiReady: boolean }
   }
 
   return (
-    <section className="panel">
-      <h2 className="panel-title">Evaluation</h2>
-      <p className="panel-sub">
-        The test set has 25 questions. Each one is written from one specific indexed passage, so the right page is known. The run compares the
-        improved search with the class-notebook baseline (every file indexed twice, plain top 5), then grades each answer.
-      </p>
-
-      <div className="row-gap wrap">
-        <button className="btn" onClick={build} disabled={building || !!run || !hasDocs || !aiReady}>
-          {building ? "Writing questions…" : set ? "Rebuild test set" : "Build 25 test questions"}
-        </button>
-        <button className="btn btn-seal" onClick={runAll} disabled={!set || !!run || building || !aiReady}>
-          {run
-            ? run.waiting
-              ? `Groq limit, resuming in ${run.waiting}s…`
-              : `Running ${run.done + 1 > run.total ? run.total : run.done + 1} of ${run.total}…`
-            : "Run evaluation"}
-        </button>
-        {set && (
-          <button className="btn btn-quiet" onClick={() => setShowQs((v) => !v)} aria-expanded={showQs}>
-            {showQs ? "Hide questions" : `View ${set.questions.length} questions`}
-          </button>
-        )}
-      </div>
-      {!hasDocs && <p className="muted top-gap">Upload documents first; questions are written from them.</p>}
-      {error && (
-        <p className="notice notice-warn top-gap" role="alert">
-          {error}
-        </p>
-      )}
-
-      {run && (
-        <div className="progress top-gap" role="progressbar" aria-valuemin={0} aria-valuemax={run.total} aria-valuenow={run.done}>
-          <div style={{ width: `${(run.done / run.total) * 100}%` }} />
-        </div>
-      )}
-
-      {showQs && set && (
-        <div className="qset top-gap">
-          <p className="muted small-text">{set.method} Built {fmtDate(set.createdAt)}.</p>
-          <ol>
-            {set.questions.map((q) => (
-              <li key={q.id}>
-                {q.question}
-                <span className="muted small-text">
-                  {" "}
-                  · {q.docName}, p. {q.page}
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Evaluation</CardTitle>
+          <CardDescription className="max-w-[78ch]">
+            A test set of up to 25 questions, each written from one specific indexed passage, so the right page is known. The run compares the improved
+            search with the class-notebook baseline (every file indexed twice, plain top 5), then grades each answer.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={build} disabled={building || !!run || !hasDocs || !aiReady}>
+              {building && <LoaderCircle className="animate-spin" />}
+              {building ? "Writing questions" : set ? "Rebuild test set" : "Build 25 test questions"}
+            </Button>
+            <Button onClick={runAll} disabled={!set || !!run || building || !aiReady}>
+              {run && <LoaderCircle className="animate-spin" />}
+              {run ? (run.waiting ? `Groq limit, resuming in ${run.waiting}s` : `Running ${Math.min(run.done + 1, run.total)} of ${run.total}`) : "Run evaluation"}
+            </Button>
+          </div>
+          {!hasDocs && <p className="text-sm text-muted-foreground">Upload documents first; questions are written from them.</p>}
+          {run && <Progress value={(run.done / run.total) * 100} aria-label="Evaluation progress" />}
+          {error && (
+            <Alert variant="warning">
+              <TriangleAlert />
+              <div>{error}</div>
+            </Alert>
+          )}
+          {set && (
+            <details className="group rounded-md border">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-semibold">
+                <span>
+                  {set.questions.length} test questions
+                  <span className="ml-2 font-normal text-muted-foreground">Built {fmtDate(set.createdAt)}</span>
                 </span>
-              </li>
-            ))}
-          </ol>
-        </div>
-      )}
+                <ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden />
+              </summary>
+              <div className="border-t px-4 py-3">
+                <p className="mb-3 text-xs text-muted-foreground">{set.method}</p>
+                <ol className="list-decimal space-y-2 pl-5 text-sm marker:text-muted-foreground">
+                  {set.questions.map((q) => (
+                    <li key={q.id}>
+                      {q.question}
+                      <span className="ml-1.5 text-xs text-muted-foreground">
+                        {docTitle(q.docName)}, page {q.page}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </details>
+          )}
+        </CardContent>
+      </Card>
 
       {summary && <Results summary={summary} onDownload={download} />}
-    </section>
+    </div>
   );
 }
 
@@ -607,134 +759,144 @@ function Results({ summary, onDownload }: { summary: EvalSummary; onDownload: (k
     },
     {
       label: "Mean reciprocal rank",
-      hint: "1.0 means the right page was always ranked first",
+      hint: "1.00 means the right page was always ranked first",
       improved: summary.improved.mrr.toFixed(2),
       naive: summary.naive.mrr.toFixed(2),
       better: summary.improved.mrr >= summary.naive.mrr,
     },
     {
       label: "Duplicate results in top 5",
-      hint: "Slots wasted on a repeat of another result",
+      hint: "Result slots wasted on a copy of another result",
       improved: pct(summary.improved.duplicateRate),
       naive: pct(summary.naive.duplicateRate),
       better: summary.improved.duplicateRate <= summary.naive.duplicateRate,
     },
   ];
+  const search = summary.searchMode === "hybrid" ? "Keyword and meaning search" : summary.searchMode === "keyword" ? "Keyword search" : summary.searchMode ? "Mixed search" : null;
   return (
-    <div className="results top-gap">
-      <div className="results-head">
-        <p className="muted small-text">
-          Last run {fmtDate(summary.runAt)} · {summary.total} questions ·{" "}
-          {summary.aiMode === "mock" ? "offline test mode" : `answers ${summary.chatModel}${summary.judgeModel ? `, graded by ${summary.judgeModel}` : ""}`}
-          {summary.searchMode ? ` · ${summary.searchMode === "hybrid" ? "keyword + meaning search" : summary.searchMode === "keyword" ? "keyword search" : "mixed search"}` : ""}
-        </p>
-        <div className="row-gap">
-          <button className="btn btn-quiet small" onClick={() => onDownload("csv")}>
-            Download CSV
-          </button>
-          <button className="btn btn-quiet small" onClick={() => onDownload("json")}>
-            Download JSON
-          </button>
+    <Card>
+      <CardHeader className="flex-row flex-wrap items-start justify-between gap-3">
+        <div>
+          <CardTitle>Latest results</CardTitle>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            <Badge variant="secondary">{fmtDate(summary.runAt)}</Badge>
+            <Badge variant="secondary">{summary.total} questions</Badge>
+            <Badge variant="secondary">
+              {summary.aiMode === "mock" ? "Offline test mode" : `Answers by ${summary.chatModel.replace("openai/", "")}`}
+            </Badge>
+            {summary.judgeModel && summary.aiMode !== "mock" && <Badge variant="secondary">Graded by {summary.judgeModel.replace("openai/", "")}</Badge>}
+            {search && <Badge variant="secondary">{search}</Badge>}
+          </div>
         </div>
-      </div>
-
-      <div className="table-wrap">
-        <table className="tbl compare">
-          <thead>
-            <tr>
-              <th>Retrieval</th>
-              <th className="num">Improved</th>
-              <th className="num">Baseline</th>
-            </tr>
-          </thead>
-          <tbody>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={() => onDownload("csv")}>
+            <Download />
+            CSV
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => onDownload("json")}>
+            <Download />
+            JSON
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Retrieval measure</TableHead>
+              <TableHead className="text-right">Improved</TableHead>
+              <TableHead className="text-right">Baseline</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
             {rows.map((r) => (
-              <tr key={r.label}>
-                <td>
-                  {r.label}
-                  <span className="muted small-text">{r.hint}</span>
-                </td>
-                <td className={"num strong" + (r.better ? " good" : "")}>{r.improved}</td>
-                <td className="num">{r.naive}</td>
-              </tr>
+              <TableRow key={r.label}>
+                <TableCell>
+                  <div className="font-semibold">{r.label}</div>
+                  <div className="text-xs text-muted-foreground">{r.hint}</div>
+                </TableCell>
+                <TableCell className={cn("tabular text-right text-lg font-bold", r.better && "text-success")}>{r.improved}</TableCell>
+                <TableCell className="tabular text-right text-lg text-muted-foreground">{r.naive}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </TableBody>
+        </Table>
 
-      <section className="stats three" aria-label="Answer quality">
-        <div className="stat">
-          <span className="stat-value">{pct(summary.faithfulness)}</span>
-          <span className="stat-label">Answers fully supported by their sources</span>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {[
+            [pct(summary.faithfulness), "Answers fully supported by their sources"],
+            [pct(summary.correctness), "Answers matching the reference"],
+            [`${(summary.avgLatencyMs / 1000).toFixed(1)}s`, "Average time per answer"],
+          ].map(([v, l]) => (
+            <div key={l} className="rounded-md bg-muted px-4 py-3">
+              <div className="tabular text-2xl font-bold">{v}</div>
+              <div className="text-sm text-muted-foreground">{l}</div>
+            </div>
+          ))}
         </div>
-        <div className="stat">
-          <span className="stat-value">{pct(summary.correctness)}</span>
-          <span className="stat-label">Answers matching the reference</span>
-        </div>
-        <div className="stat">
-          <span className="stat-value">{(summary.avgLatencyMs / 1000).toFixed(1)}s</span>
-          <span className="stat-label">Average time per answer</span>
-        </div>
-      </section>
 
-      <div className="table-wrap top-gap">
-        <table className="tbl per-q">
-          <thead>
-            <tr>
-              <th>Question</th>
-              <th className="num">Rank</th>
-              <th className="num">Baseline</th>
-              <th>Grade</th>
-            </tr>
-          </thead>
-          <tbody>
-            {summary.rows.map((r) => (
-              <FragmentRow key={r.id} r={r} open={open === r.id} toggle={() => setOpen(open === r.id ? null : r.id)} />
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
+        <div>
+          <h3 className="mb-2 text-sm font-bold">Per question</h3>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Question</TableHead>
+                <TableHead className="text-right">Rank</TableHead>
+                <TableHead className="text-right">Baseline</TableHead>
+                <TableHead>Grade</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {summary.rows.map((r) => (
+                <QuestionRow key={r.id} r={r} open={open === r.id} toggle={() => setOpen(open === r.id ? null : r.id)} />
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 
-function FragmentRow({ r, open, toggle }: { r: EvalResultRow; open: boolean; toggle: () => void }) {
+function QuestionRow({ r, open, toggle }: { r: EvalResultRow; open: boolean; toggle: () => void }) {
   return (
     <>
-      <tr className="clickable" onClick={toggle}>
-        <td>
-          <button className="linkish" aria-expanded={open} onClick={(e) => (e.stopPropagation(), toggle())}>
+      <TableRow data-state={open ? "open" : "closed"}>
+        <TableCell className="min-w-64">
+          <button className="text-left font-medium hover:underline focus-visible:outline-[3px] focus-visible:outline-ring" aria-expanded={open} onClick={toggle}>
             {r.question}
           </button>
-          <span className="muted small-text">
-            {r.docName}, p. {r.page}
-          </span>
-        </td>
-        <td className="num">{r.improved.rank ?? "–"}</td>
-        <td className="num">
+          <div className="text-xs text-muted-foreground">
+            {docTitle(r.docName)}, page {r.page}
+          </div>
+        </TableCell>
+        <TableCell className="tabular text-right">{r.improved.rank ?? "–"}</TableCell>
+        <TableCell className="tabular text-right">
           {r.naive.rank ?? "–"}
-          {r.naive.duplicatesInTopK > 0 && <span className="muted small-text">{r.naive.duplicatesInTopK} dup</span>}
-        </td>
-        <td>
-          <span className={"pill" + (r.faithful ? " ok" : " bad")}>{r.faithful ? "Supported" : "Unsupported"}</span>{" "}
-          <span className={"pill" + (r.correct ? " ok" : "")}>{r.correct ? "Correct" : "Off"}</span>
-        </td>
-      </tr>
+          {r.naive.duplicatesInTopK > 0 && <div className="text-xs text-muted-foreground">{r.naive.duplicatesInTopK} duplicates</div>}
+        </TableCell>
+        <TableCell>
+          <div className="flex flex-wrap gap-1">
+            <Badge variant={r.faithful ? "success" : "destructive"}>{r.faithful ? "Supported" : "Unsupported"}</Badge>
+            <Badge variant={r.correct ? "success" : "secondary"}>{r.correct ? "Correct" : "Not matching"}</Badge>
+          </div>
+        </TableCell>
+      </TableRow>
       {open && (
-        <tr className="detail">
-          <td colSpan={4}>
+        <TableRow className="bg-muted/60 hover:bg-muted/60">
+          <TableCell colSpan={4} className="space-y-2 text-sm">
             <p>
-              <strong>Expected:</strong> {r.expectedAnswer}
+              <span className="font-semibold">Expected:</span> {r.expectedAnswer}
             </p>
             <p>
-              <strong>Answer:</strong> {r.answer}
+              <span className="font-semibold">Answer:</span> {r.answer}
             </p>
-            <p className="muted small-text">
-              Grader: {r.judgeNote} · Improved top 5: {r.improved.retrieved.map((x) => `p.${x.page}`).join(", ")} · Baseline top 5:{" "}
-              {r.naive.retrieved.map((x) => `p.${x.page}${x.chunkId.endsWith("#dup") ? "*" : ""}`).join(", ")} (* = duplicate copy)
+            <p className="text-xs text-muted-foreground">
+              Grader: {r.judgeNote} Improved top 5: {r.improved.retrieved.map((x) => `p.${x.page}`).join(", ")}. Baseline top 5:{" "}
+              {r.naive.retrieved.map((x) => `p.${x.page}${x.chunkId.endsWith("#dup") ? "*" : ""}`).join(", ")} (* duplicate copy).
             </p>
-          </td>
-        </tr>
+          </TableCell>
+        </TableRow>
       )}
     </>
   );

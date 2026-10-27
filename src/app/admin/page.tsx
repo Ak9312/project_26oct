@@ -1,8 +1,8 @@
 import type { Metadata } from "next";
 import { adminConfigured } from "@/lib/auth";
 import AdminDashboard from "@/components/admin-dashboard";
-import "../chat.css";
-import "./admin.css";
+import { SiteHeader } from "@/components/site-header";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/primitives";
 
 export const dynamic = "force-dynamic";
 export const metadata: Metadata = {
@@ -18,15 +18,21 @@ export const metadata: Metadata = {
 export default function AdminPage() {
   if (!adminConfigured()) {
     return (
-      <main className="admin-center">
-        <div className="login-card">
-          <h1 className="read">Admin isn&apos;t set up yet</h1>
-          <p>
-            Add an <code>ADMIN_PATH</code> environment variable (at least 8 random characters) in your Vercel
-            project settings, then redeploy. The admin page will be at that path.
-          </p>
-        </div>
-      </main>
+      <div className="min-h-dvh bg-muted/40">
+        <SiteHeader title="Policy Knowledge Assistant" tag="Admin" />
+        <main className="mx-auto max-w-lg px-4 py-16">
+          <Card>
+            <CardHeader>
+              <CardTitle>Admin isn&apos;t set up yet</CardTitle>
+              <CardDescription>
+                Add an <code className="rounded bg-muted px-1 py-0.5 text-foreground">ADMIN_PATH</code> environment variable (at least 8 random
+                characters) in your Vercel project settings, then redeploy. The admin page will be at that path.
+              </CardDescription>
+            </CardHeader>
+            <CardContent />
+          </Card>
+        </main>
+      </div>
     );
   }
   return <AdminDashboard />;

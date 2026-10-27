@@ -1,8 +1,6 @@
 import type { Metadata, Viewport } from "next";
-// Self-hosted fonts: Public Sans (the typeface designed for government sites) for the interface,
-// Literata (a long-form reading face) for answers and document passages.
+// Public Sans: the open typeface designed for public-service websites. Self-hosted.
 import "@fontsource-variable/public-sans";
-import "@fontsource-variable/literata";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -12,8 +10,8 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f3f5f2" },
-    { media: "(prefers-color-scheme: dark)", color: "#0f1626" },
+    { media: "(prefers-color-scheme: light)", color: "#13294b" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b1f3d" },
   ],
 };
 
