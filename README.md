@@ -80,15 +80,37 @@ Results can be downloaded from the admin page as CSV or JSON.
 
 ### Results
 
-_Run the evaluation on the deployed site and paste the table here._
+Run on 5 November 2026 against the **National Education Policy 2020** (Government of India, English, 66 pages),
+indexed as 387 passages. Search ran in **keyword-only mode** for this run because the free Gemini embedding
+quota was used up. Full per-question results: [`eval/results-2026-11-05.csv`](eval/results-2026-11-05.csv).
 
 | Metric | Improved | Baseline |
 | --- | --- | --- |
-| Right page in top 5 | | |
-| Mean reciprocal rank | | |
-| Duplicate results in top 5 | | |
-| Faithfulness | | n/a |
-| Correctness | | n/a |
+| Right page in top 5 | 100% (25/25) | 100% (25/25) |
+| Mean reciprocal rank | 0.98 | 0.97 |
+| Duplicate results in top 5 | **0%** | **40%** |
+| Faithfulness (AI grader) | 96% (24/25) | n/a |
+| Correctness (AI grader) | 92% (23/25) | n/a |
+| Average answer time | 3.3 s (max 6.8 s) | n/a |
+
+**What this shows.** On a single long document, both setups find the right page, so the fix does not change
+whether the source is found. What it changes is the evidence the model receives: in the baseline, 2 of every 5
+retrieved passages were exact copies, so the model saw 3 distinct passages instead of 5. The improved index
+removes that waste completely.
+
+**Human check of the AI grader.** Every answer the grader failed was checked by hand against the PDF:
+
+| Question | Grader verdict | Human verdict |
+| --- | --- | --- |
+| Q13: mechanisms for children's safety and rights (para 8.11) | Not correct | Correct and supported: the answer follows the source almost word for word. It omits "particularly girl children", so it is slightly incomplete. The reference answer itself misread "substance or drug abuse" as "abuse". |
+| Q24: content in the digital repository (section on content creation, page 60) | Not supported, not correct | Correct and supported: the extra items in the answer ("apps, gamification of Indian art and culture") appear in the same paragraph of the source. The answer was more complete than the reference. |
+
+After the human check: **25/25 answers supported by their sources, 25/25 correct** (one slightly incomplete).
+The grader was also inconsistent between runs: Q13's identical answer was marked unsupported on 3 November and
+supported on 5 November. Automated grading is useful for spotting candidates for review, not as a final verdict.
+
+**Known issue:** 4 of 25 answers show raw citation markers such as `【1†L1-L3】` from the model's output; these
+should be normalised to `[1]` before display.
 
 **Limits of this evaluation:** questions are generated from single passages, so they favour
 fact-lookup questions over questions that need several passages; grading uses the same model family
