@@ -203,7 +203,7 @@ export const NOT_FOUND = "I couldn't find this in the published documents.";
 const SYSTEM = `You answer questions about public policy documents.
 Rules:
 - Use ONLY the numbered sources provided. Never use outside knowledge, even if you know the answer.
-- Cite every factual sentence with the source number in square brackets, like [1] or [2][3].
+- Cite every factual sentence with the source number in square brackets, like [1] or [2][3]. Use only this format: never 【1】, 【1†L1-L3】 or line ranges.
 - If the sources do not contain the answer, reply exactly: "${NOT_FOUND}" and nothing else.
 - Be concise and plain: short paragraphs or a short list. Quote exact figures, dates and names as written in the sources.
 - Do not mention "sources" or "context" by name in prose; just cite with brackets.

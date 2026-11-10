@@ -13,10 +13,18 @@ export type UiSource = {
   score: number;
 };
 
+/**
+ * Some models (gpt-oss) cite in their own style, e.g. 【1†L1-L3】, 【2】 or [3†L4].
+ * Rewrites those to the plain [n] the rest of the UI understands.
+ */
+export function normalizeCitations(text: string): string {
+  return text.replace(/[【\[]\s*(\d+)\s*(?:†[^】\]]*)?[】\]]/g, "[$1]");
+}
+
 /** Citation numbers actually used in an answer, in order of first use. */
 export function citedNumbers(answer: string): number[] {
   const out: number[] = [];
-  for (const m of answer.matchAll(/\[(\d+)\]/g)) {
+  for (const m of normalizeCitations(answer).matchAll(/\[(\d+)\]/g)) {
     const n = Number(m[1]);
     if (!out.includes(n)) out.push(n);
   }
@@ -51,7 +59,7 @@ function inline(text: string, onCite: (n: number) => void, key: string): ReactNo
 
 /** Paragraphs, bullet and numbered lists, bold, and clickable citations. */
 export function AnswerText({ text, onCite, streaming }: { text: string; onCite: (n: number) => void; streaming?: boolean }) {
-  const blocks = text.trim().split(/\n{2,}/);
+  const blocks = normalizeCitations(text).trim().split(/\n{2,}/);
   return (
     <div className={cn("space-y-4 text-[17px] leading-[1.7] text-foreground", streaming && "streaming-caret")}>
       {blocks.map((block, bi) => {
